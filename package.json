@@ -1,6 +1,6 @@
 {
   "name": "clivoke",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Typed command definitions, argv parsing, help, completion, and explicit execution.",
   "type": "module",
   "sideEffects": false,
@@ -67,8 +67,8 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@ismail-elkorchi/cli-core": "^0.3.0",
-    "argv-flags": "^4.0.0"
+    "@ismail-elkorchi/cli-core": "^0.2.0",
+    "argv-flags": "^3.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

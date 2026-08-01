@@ -343,7 +343,7 @@ function optionPresentation(
     };
   }
   if (definition.type === 'count') return { ...common, kind: 'count' };
-  if (!isValueType(definition.type)) return undefined;
+  if (!isPotentialValueType(definition.type)) return undefined;
   const choices = typeof definition.type === 'object'
     ? definition.type.choices
     : undefined;
@@ -433,9 +433,9 @@ function isValidFlagList(value: unknown): value is readonly [string, ...string[]
   return Array.isArray(value) && value.length > 0 && value.every((flag) => typeof flag === 'string');
 }
 
-function isValueType(value: unknown): value is Exclude<ValueType, 'boolean' | 'count'> {
+function isPotentialValueType(value: unknown): value is Exclude<ValueType, 'boolean' | 'count'> {
   return value === 'string' || value === 'number' || value === 'integer' ||
-    (isRecord(value) && value['protocol'] === 'argv-flags/value-parser/v1');
+    isRecord(value);
 }
 
 function formatDefault(value: unknown): string | undefined {
