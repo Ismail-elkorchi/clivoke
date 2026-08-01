@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@ismail-elkorchi/cli-core": "../node_modules/@ismail-elkorchi/cli-core/src/index.ts",
+    "argv-flags": "../node_modules/argv-flags/src/index.ts"
+  }
+}

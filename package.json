@@ -1,6 +1,6 @@
 {
   "name": "clivoke",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Typed command definitions, argv parsing, help, completion, and explicit execution.",
   "type": "module",
   "sideEffects": false,
@@ -15,6 +15,7 @@
   "files": [
     "CHANGELOG.md",
     "dist",
+    "src",
     "README.md",
     "LICENSE"
   ],
@@ -25,7 +26,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
     "test": "npm run build && node --test tests/facade.test.mjs tests/main.test.mjs tests/shells.test.mjs",
     "test:package": "node --test tests/packed-consumer.test.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run test:package"
+    "test:source": "deno test --cached-only --node-modules-dir=manual --import-map=tests/jsr-import-map.json tests/runtime-smoke.ts && bun run tests/runtime-smoke.ts",
+    "check:jsr": "deno publish --dry-run --allow-dirty",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:package && npm run test:source"
   },
   "repository": {
     "type": "git",
@@ -35,6 +38,7 @@
     "cli",
     "command-line",
     "command-line-parser",
+    "argv",
     "argument-parser",
     "option-parser",
     "command-router",
@@ -45,6 +49,7 @@
     "autocomplete",
     "completion",
     "typescript",
+    "typed-cli",
     "node",
     "deno",
     "bun"
@@ -62,8 +67,8 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@ismail-elkorchi/cli-core": "^0.2.0",
-    "argv-flags": "^3.1.0"
+    "@ismail-elkorchi/cli-core": "^0.3.0",
+    "argv-flags": "^4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

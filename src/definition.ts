@@ -1,27 +1,37 @@
 import {
-  CliDefinitionError,
+  CliDefinitionError as CoreDefinitionError,
   defineCli as defineCoreCli,
-  findCliCommand,
   type CliCommandDefinition as CoreCommandDefinition,
-  type CliDefinitionIssue,
   type CliDefinition as CoreDefinition,
   type CliOptionDefinition as CoreOptionDefinition,
-  type CliProgram
+  type CliProgram,
+  type ParsedInvocation
 } from '@ismail-elkorchi/cli-core';
-import { createArgvBinder } from './option-binder.ts';
+import {
+  DefinitionError as ArgvDefinitionError,
+  type ValueType
+} from 'argv-flags';
+import { CliDefinitionError } from './definition-error.ts';
+import {
+  compileOptionParser,
+  createArgvBinder,
+  type RuntimeParser
+} from './option-binder.ts';
 import type {
   Cli,
   CliBooleanOptionDefinition,
   CliCommandDefinition,
   CliCountOptionDefinition,
   CliDefinition,
+  CliDiagnostic,
+  CliDefinitionIssue,
   CliMultipleOptionDefinition,
+  CliOptionDiagnostic,
   CliOptionDefinitions,
   CliParseInput,
   CliParsedInvocation,
-  CliScalarOptionDefinition,
+  CliScalarOptionDefinition
 } from './public-types.ts';
-import type { ValueType } from 'argv-flags';
 
 type OptionShape<Definition> = Definition extends { readonly type: 'boolean' }
   ? CliBooleanOptionDefinition
@@ -76,27 +86,73 @@ type ExactDefinition<Definition extends CliDefinition> = Definition & Record<
     : never
   : object);
 
-/** Compiles command semantics and argv parsers into one reusable facade. */
-export function createCli<const Definition extends CliDefinition>(definition: ExactDefinition<Definition>): Cli<Definition> {
-  validateFacadeShape(definition);
-  const coreDefinition = toCoreDefinition(definition);
-  const program = defineCoreCli(coreDefinition);
-  const definitionsByCommand = optionDefinitionsByCommand(program, definition);
-  const parser = createArgvBinder(definitionsByCommand);
-  return Object.freeze({
+export interface CliRuntime {
+  readonly invocationParser: ReturnType<typeof createArgvBinder>;
+  readonly optionParsers: ReadonlyMap<string, RuntimeParser>;
+}
+
+const runtimes = new WeakMap<object, CliRuntime>();
+
+/** Compiles command semantics and argv grammar into one reusable facade. */
+export function createCli<const Definition extends CliDefinition>(
+  definition: ExactDefinition<Definition>
+): Cli<Definition> {
+  const issues = collectFacadeIssues(definition);
+  let program: CliProgram | undefined;
+  const optionParsers = new Map<string, RuntimeParser>();
+
+  if (isTraversableDefinition(definition)) {
+    try {
+      program = defineCoreCli(toCoreDefinition(definition));
+    } catch (error) {
+      if (!(error instanceof CoreDefinitionError)) throw error;
+      issues.push(...error.issues.map((issue) => Object.freeze({
+        ...issue,
+        source: 'command' as const
+      })));
+    }
+
+    for (const scope of optionDefinitionScopes(definition)) {
+      try {
+        optionParsers.set(scope.key, compileOptionParser(scope.options));
+      } catch (error) {
+        if (!(error instanceof ArgvDefinitionError)) throw error;
+        issues.push(...error.issues.map((issue) => Object.freeze({
+          ...issue,
+          source: 'option' as const,
+          commandPath: scope.path
+        })));
+      }
+    }
+  }
+
+  if (issues.length > 0 || program === undefined) {
+    throw new CliDefinitionError(issues);
+  }
+
+  const invocationParser = createArgvBinder(optionParsers);
+  const cli: Cli<Definition> = Object.freeze({
     program,
-    ...(definition.version === undefined ? {} : { version: definition.version }),
     parse(input: CliParseInput = {}): CliParsedInvocation<Definition> {
-      const invocation = parser.parse(program, {
+      const invocation = invocationParser.parse(program, {
         ...(input.argv === undefined ? {} : { argv: input.argv }),
         unknownFlagPolicy: input.unknownFlagPolicy === 'collect' ? 'collect' : 'error'
       });
-      return invocation as CliParsedInvocation<Definition>;
+      return translateInvocation(invocation) as CliParsedInvocation<Definition>;
     }
   });
+  runtimes.set(cli, Object.freeze({ invocationParser, optionParsers }));
+  return cli;
 }
 
-const facadeProperties = new Set(['name', 'version', 'description', 'options', 'commands']);
+/** Returns private compiled integration data for other Clivoke modules. */
+export function runtimeFor(cli: object): CliRuntime {
+  const runtime = runtimes.get(cli);
+  if (runtime === undefined) throw new TypeError('CLI was not created by createCli.');
+  return runtime;
+}
+
+const facadeProperties = new Set(['name', 'description', 'options', 'commands']);
 const commandProperties = new Set([
   'name',
   'aliases',
@@ -108,28 +164,21 @@ const commandProperties = new Set([
   'acceptsAfterDoubleDash'
 ]);
 
-function validateFacadeShape(definition: CliDefinition): void {
+function collectFacadeIssues(definition: unknown): CliDefinitionIssue[] {
   const issues: CliDefinitionIssue[] = [];
   if (!isRecord(definition)) {
-    throw new CliDefinitionError([{
-      code: 'INVALID_PROGRAM_NAME',
-      message: 'The CLI definition must be an object.',
-      name: definition
-    }]);
+    issues.push({
+      source: 'clivoke',
+      code: 'INVALID_OPTIONS',
+      message: 'A Clivoke definition must be an object.',
+      commandPath: Object.freeze([])
+    });
+    return issues;
   }
   collectUnknownProperties(definition, facadeProperties, [], issues);
-  if (definition.version !== undefined && typeof definition.version !== 'string') {
-    issues.push({
-      code: 'INVALID_PROPERTY',
-      message: 'version must be a string.',
-      definitionPath: Object.freeze([]),
-      property: 'version',
-      expected: 'string'
-    });
-  }
-  collectOptionShapeIssues(definition.options, [], issues);
-  collectCommandShapeIssues(definition.commands, [], issues);
-  if (issues.length > 0) throw new CliDefinitionError(issues);
+  collectOptionShapeIssues(definition['options'], [], issues);
+  collectCommandShapeIssues(definition['commands'], [], issues);
+  return issues;
 }
 
 function collectCommandShapeIssues(
@@ -140,20 +189,20 @@ function collectCommandShapeIssues(
   if (commands === undefined) return;
   if (!Array.isArray(commands)) {
     issues.push({
-      code: 'INVALID_COMMAND_NAME',
+      source: 'clivoke',
+      code: 'INVALID_OPTIONS',
       message: 'Commands must be an array.',
-      commandPath: Object.freeze([...parentPath]),
-      name: commands
+      commandPath: Object.freeze([...parentPath])
     });
     return;
   }
   for (const command of commands) {
     if (!isRecord(command)) {
       issues.push({
-        code: 'INVALID_COMMAND_NAME',
+        source: 'clivoke',
+        code: 'INVALID_OPTIONS',
         message: 'Each command must be an object.',
-        commandPath: Object.freeze([...parentPath]),
-        name: command
+        commandPath: Object.freeze([...parentPath])
       });
       continue;
     }
@@ -173,26 +222,22 @@ function collectOptionShapeIssues(
   if (options === undefined) return;
   if (!isRecord(options)) {
     issues.push({
-      code: 'INVALID_OPTION',
+      source: 'clivoke',
+      code: 'INVALID_OPTIONS',
       message: 'Options must be an object keyed by logical option name.',
-      commandPath: Object.freeze([...commandPath]),
-      index: 0,
-      reason: 'definition'
+      commandPath: Object.freeze([...commandPath])
     });
     return;
   }
-  let index = 0;
   for (const property of Reflect.ownKeys(options)) {
     if (typeof property !== 'string' || !isRecord(options[property])) {
       issues.push({
-        code: 'INVALID_OPTION',
+        source: 'clivoke',
+        code: 'INVALID_OPTIONS',
         message: 'Each option must have a string name and an object definition.',
-        commandPath: Object.freeze([...commandPath]),
-        index,
-        reason: 'definition'
+        commandPath: Object.freeze([...commandPath])
       });
     }
-    index += 1;
   }
 }
 
@@ -205,12 +250,29 @@ function collectUnknownProperties(
   for (const property of Reflect.ownKeys(value)) {
     if (typeof property === 'string' && allowed.has(property)) continue;
     issues.push({
+      source: 'clivoke',
       code: 'UNKNOWN_PROPERTY',
       message: 'Definition object contains an unsupported property.',
       definitionPath: Object.freeze([...path]),
       property
     });
   }
+}
+
+function isTraversableDefinition(value: unknown): value is CliDefinition {
+  if (!isRecord(value) || !isOptionMap(value['options'])) return false;
+  return isCommandArray(value['commands']);
+}
+
+function isCommandArray(value: unknown): boolean {
+  if (value === undefined) return true;
+  return Array.isArray(value) && value.every((command) =>
+    isRecord(command) && isOptionMap(command['options']) && isCommandArray(command['commands']));
+}
+
+function isOptionMap(value: unknown): boolean {
+  return value === undefined || (isRecord(value) && Reflect.ownKeys(value).every((name) =>
+    typeof name === 'string' && isRecord(value[name])));
 }
 
 function isRecord(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
@@ -233,7 +295,9 @@ function toCoreCommand(definition: CliCommandDefinition): CoreCommandDefinition 
     ...(definition.description === undefined ? {} : { description: definition.description }),
     ...(definition.deprecated === undefined ? {} : { deprecated: definition.deprecated }),
     options: optionPresentations(definition.options ?? {}),
-    ...(definition.positionals === undefined ? {} : { positionals: definition.positionals }),
+    ...(definition.positionals === undefined
+      ? {}
+      : { positionals: definition.positionals }),
     commands: (definition.commands ?? []).map(toCoreCommand),
     ...(definition.acceptsAfterDoubleDash === undefined
       ? {}
@@ -241,62 +305,159 @@ function toCoreCommand(definition: CliCommandDefinition): CoreCommandDefinition 
   };
 }
 
-function optionPresentations(definitions: CliOptionDefinitions): readonly CoreOptionDefinition[] {
-  return Object.freeze(Object.entries(definitions).map(([name, definition]) => {
-    const flags = definition.type === 'boolean' && definition.falseFlags !== undefined
-      ? [...definition.flags, ...definition.falseFlags]
-      : [...definition.flags];
-    const valueMode = definition.type === 'boolean' || definition.type === 'count'
-      ? 'none' as const
-      : definition.valueMode ?? 'required';
-    const common = {
-      name,
-      flags: nonEmptyFlags(flags),
-      ...('required' in definition && definition.required !== undefined ? { required: definition.required } : {}),
-      ...(definition.description === undefined ? {} : { description: definition.description }),
-      ...(definition.hidden === undefined ? {} : { hidden: definition.hidden })
-    };
-    if (valueMode === 'none') return { ...common, valueMode };
+function optionPresentations(
+  definitions: CliOptionDefinitions
+): readonly CoreOptionDefinition[] {
+  const result: CoreOptionDefinition[] = [];
+  for (const [name, definition] of Object.entries(definitions)) {
+    const presentation = optionPresentation(name, definition);
+    if (presentation !== undefined) result.push(presentation);
+  }
+  return Object.freeze(result);
+}
+
+function optionPresentation(
+  name: string,
+  definition: CliOptionDefinitionValue
+): CoreOptionDefinition | undefined {
+  if (!isValidFlagList(definition.flags)) return undefined;
+  const common = {
+    name,
+    flags: definition.flags,
+    ...(definition.description === undefined ? {} : { description: definition.description }),
+    ...(definition.hidden === undefined ? {} : { hidden: definition.hidden })
+  };
+  if (definition.type === 'boolean') {
+    const hasDefault = Object.hasOwn(definition, 'default');
+    const defaultLabel = hasDefault ? formatDefault(definition.default) : undefined;
     return {
       ...common,
-      valueMode,
-      ...('valueLabel' in definition && definition.valueLabel !== undefined
-        ? { valueLabel: definition.valueLabel }
-        : {})
+      kind: 'boolean',
+      ...(definition.falseFlags === undefined || !isValidFlagList(definition.falseFlags)
+        ? {}
+        : { falseFlags: definition.falseFlags }),
+      ...(definition.required === undefined ? {} : { required: definition.required }),
+      ...(definition.repeat === undefined ? {} : { repeat: definition.repeat }),
+      hasDefault,
+      ...(defaultLabel === undefined ? {} : { defaultLabel })
     };
-  }));
+  }
+  if (definition.type === 'count') return { ...common, kind: 'count' };
+  if (!isValueType(definition.type)) return undefined;
+  const choices = typeof definition.type === 'object'
+    ? definition.type.choices
+    : undefined;
+  const hasDefault = Object.hasOwn(definition, 'default');
+  const defaultLabel = hasDefault ? formatDefault(definition.default) : undefined;
+  return {
+    ...common,
+    kind: 'value',
+    valueMode: definition.valueMode ?? 'required',
+    ...('valueLabel' in definition && definition.valueLabel !== undefined
+      ? { valueLabel: definition.valueLabel }
+      : {}),
+    ...(definition.required === undefined ? {} : { required: definition.required }),
+    ...('multiple' in definition && definition.multiple === true ? { multiple: true } : {}),
+    ...('repeat' in definition && definition.repeat !== undefined
+      ? { repeat: definition.repeat }
+      : {}),
+    hasDefault,
+    ...(defaultLabel === undefined ? {} : { defaultLabel }),
+    ...(choices === undefined ? {} : { valueCandidates: choices })
+  };
 }
 
-function optionDefinitionsByCommand(
-  program: CliProgram,
-  definition: CliDefinition
-): ReadonlyMap<string, CliOptionDefinitions> {
-  const result = new Map<string, CliOptionDefinitions>();
+function optionDefinitionScopes(definition: CliDefinition): readonly {
+  readonly key: string;
+  readonly path: readonly string[];
+  readonly options: CliOptionDefinitions;
+}[] {
   const globalOptions = definition.options ?? {};
-  result.set(program.root.key, globalOptions);
-  collectCommandOptions(program, definition.commands ?? [], [], globalOptions, result);
-  return result;
+  const scopes = [{
+    key: definition.name,
+    path: Object.freeze([]),
+    options: freezeOptionMap(globalOptions)
+  }];
+  collectCommandScopes(
+    definition.name,
+    definition.commands ?? [],
+    [],
+    globalOptions,
+    scopes
+  );
+  return Object.freeze(scopes);
 }
 
-function collectCommandOptions(
-  program: CliProgram,
-  definitions: readonly CliCommandDefinition[],
+function collectCommandScopes(
+  programName: string,
+  commands: readonly CliCommandDefinition[],
   parentPath: readonly string[],
-  globalOptions: CliOptionDefinitions,
-  result: Map<string, CliOptionDefinitions>
+  inheritedOptions: CliOptionDefinitions,
+  scopes: {
+    key: string;
+    path: readonly string[];
+    options: CliOptionDefinitions;
+  }[]
 ): void {
-  for (const definition of definitions) {
-    const path = [...parentPath, definition.name];
-    const command = findCliCommand(program, path);
-    if (command !== undefined) {
-      result.set(command.key, Object.freeze({ ...globalOptions, ...(definition.options ?? {}) }));
-    }
-    collectCommandOptions(program, definition.commands ?? [], path, globalOptions, result);
+  for (const command of commands) {
+    const path = Object.freeze([...parentPath, command.name]);
+    const options = mergeOptionMaps(inheritedOptions, command.options ?? {});
+    scopes.push({ key: [programName, ...path].join(' '), path, options });
+    collectCommandScopes(programName, command.commands ?? [], path, options, scopes);
   }
 }
 
-function nonEmptyFlags(flags: readonly string[]): readonly [string, ...string[]] {
-  const [first, ...rest] = flags;
-  if (first === undefined) throw new TypeError('An option must declare at least one flag.');
-  return Object.freeze([first, ...rest]);
+function mergeOptionMaps(
+  inherited: CliOptionDefinitions,
+  local: CliOptionDefinitions
+): CliOptionDefinitions {
+  const result = Object.create(null) as Record<string, CliOptionDefinitionValue>;
+  for (const [name, definition] of Object.entries(inherited)) result[name] = definition;
+  for (const [name, definition] of Object.entries(local)) result[name] = definition;
+  return Object.freeze(result);
+}
+
+type CliOptionDefinitionValue = CliOptionDefinitions[string];
+
+type TranslatedInvocation = ParsedInvocation extends infer Invocation
+  ? Invocation extends ParsedInvocation
+    ? Omit<Invocation, 'diagnostics'> & { readonly diagnostics: readonly CliDiagnostic[] }
+    : never
+  : never;
+
+function freezeOptionMap(options: CliOptionDefinitions): CliOptionDefinitions {
+  return mergeOptionMaps({}, options);
+}
+
+function isValidFlagList(value: unknown): value is readonly [string, ...string[]] {
+  return Array.isArray(value) && value.length > 0 && value.every((flag) => typeof flag === 'string');
+}
+
+function isValueType(value: unknown): value is Exclude<ValueType, 'boolean' | 'count'> {
+  return value === 'string' || value === 'number' || value === 'integer' ||
+    (isRecord(value) && value['protocol'] === 'argv-flags/value-parser/v1');
+}
+
+function formatDefault(value: unknown): string | undefined {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value) && value.every((entry) =>
+    typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean')) {
+    return value.join(', ');
+  }
+  return undefined;
+}
+
+function translateInvocation(invocation: ParsedInvocation): TranslatedInvocation {
+  const diagnostics = Object.freeze(invocation.diagnostics.map((diagnostic) => {
+    if (diagnostic.source !== 'option') return diagnostic;
+    return Object.freeze({
+      ...diagnostic.details,
+      source: 'option' as const,
+      code: diagnostic.code,
+      severity: 'error' as const,
+      message: diagnostic.message
+    }) as CliOptionDiagnostic;
+  }));
+  return Object.freeze({ ...invocation, diagnostics });
 }

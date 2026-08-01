@@ -21,23 +21,27 @@
  */
 export { completeCliWords, createCompletionScript } from './completion.ts';
 export { createCli } from './definition.ts';
+export { CliDefinitionError } from './definition-error.ts';
 export { createCliHelp } from './help.ts';
 export {
   createDenoCliHost,
   createProcessCliHost,
   formatCliDiagnostics,
+  runCliCompletion,
   runCliMain
 } from './main.ts';
 export { value } from 'argv-flags';
-export { CliDefinitionError } from '@ismail-elkorchi/cli-core';
 
 export type {
   Cli,
   CliCommandDefinition,
+  CliCompletionContext,
+	CliCompletion,
+	CliCompletionMainInput,
   CliCompletionRequest,
+	CliDefinitionIssue,
+	CliDiagnostic,
   CliDefinition,
-  CliMainHandler,
-  CliMainHandlerContext,
   CliMainHandlers,
   CliMainHost,
   CliMainInput,
@@ -46,16 +50,12 @@ export type {
   CliOptionDefinitions,
   CliParsedInvocation,
   CliParsedInvocationSuccess,
-  CliParsedValues,
   CliParseInput,
   CliPositionalDefinition,
   CliShell,
-  CliSpecifiedOptions,
   DenoLike,
   ProcessLike
 } from './public-types.ts';
 export type {
-  CliCompletion,
-  CliDiagnostic,
   CliHelp
 } from '@ismail-elkorchi/cli-core';

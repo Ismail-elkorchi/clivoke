@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0 - 2026-08-01
+
+- Unified command routing and final option parsing on `argv-flags` token scans,
+  eliminating the second partial option grammar.
+- Added command-discriminated option and positional values plus exact,
+  command-specific handler maps.
+- Unified definition errors and runtime diagnostics while retaining exact
+  locations, suggestions, unknown flags, deprecations, and source ownership.
+- Inherited ancestor options, rejected ambiguous command/positional trees, and
+  made pre-command local options fail consistently.
+- Added default, false-flag, finite-value, repetition, and multiplicity metadata
+  to help and grammar-aware option and positional value completion.
+- Replaced the reserved `__complete` command protocol with a dedicated
+  completion executable and explicit cursor coordinates.
+- Removed the inert `version` definition field.
+
 ## 0.1.0 - 2026-08-01
 
 - Added one typed command definition for parsing, help, completion, and explicit

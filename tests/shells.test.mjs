@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import test from 'node:test';
 import { createCli, createCompletionScript } from '../dist/index.js';
@@ -33,6 +36,24 @@ for (const { shell, command, args } of [
     assert.equal(result.stderr, '');
   });
 }
+
+test('bash transports the complete word vector and cursor to the companion executable', async (context) => {
+  if (!(await available('bash'))) {
+    context.skip('bash is unavailable');
+    return;
+  }
+  const workspace = await mkdtemp(join(tmpdir(), 'clivoke-bash-completion-'));
+  context.after(() => rm(workspace, { recursive: true, force: true }));
+  const recorded = join(workspace, 'arguments.txt');
+  const executablePath = join(workspace, 'ship-complete');
+  await writeFile(executablePath, `#!/usr/bin/env bash\nprintf '%s\\n' "$@" > '${recorded}'\nprintf '%s\\n' '--region'\n`);
+  await chmod(executablePath, 0o755);
+  const script = createCompletionScript(cli, 'bash', executablePath);
+  const command = `${script}\nCOMP_WORDS=(ship deploy --r)\nCOMP_CWORD=2\n_ship\nprintf '%s\\n' "\${COMPREPLY[@]}"`;
+  const result = await execFileAsync(executable('bash'), ['-c', command]);
+  assert.equal(result.stdout, '--region\n');
+  assert.equal(await readFile(recorded, 'utf8'), '2\nship\ndeploy\n--r\n');
+});
 
 async function available(command) {
   try {

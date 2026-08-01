@@ -1,6 +1,8 @@
-import { dispatchCli, type CliDiagnostic } from '@ismail-elkorchi/cli-core';
+import { dispatchCli } from '@ismail-elkorchi/cli-core';
 import { completeCliWords } from './completion.ts';
 import type {
+	CliCompletionMainInput,
+	CliDiagnostic,
   CliDefinition,
   CliMainHost,
   CliMainInput,
@@ -9,19 +11,35 @@ import type {
   ProcessLike
 } from './public-types.ts';
 
+/** Runs the explicit protocol used by a dedicated completion executable. */
+export async function runCliCompletion<Definition extends CliDefinition>(
+  input: CliCompletionMainInput<Definition>
+): Promise<number> {
+  const argv = input.argv ?? input.host.argv;
+  const cursor = Number(argv[0]);
+  if (!Number.isInteger(cursor) || cursor < 0) {
+    await writeIfPresent(input.host.writeStderr, 'Completion cursor must be a non-negative integer.');
+    input.host.setExitCode(2);
+    return 2;
+  }
+  const candidates = completeCliWords(input.cli, {
+    words: argv.slice(1),
+    cursor,
+    ...(input.provideValues === undefined ? {} : { provideValues: input.provideValues })
+  });
+  await writeIfPresent(
+    input.host.writeStdout,
+    candidates.map((candidate) => candidate.value).join('\n')
+  );
+  input.host.setExitCode(0);
+  return 0;
+}
+
 /** Runs one explicit argv vector through parsing and command dispatch. */
 export async function runCliMain<Definition extends CliDefinition, Context>(
   input: CliMainInput<Definition, Context>
 ): Promise<number> {
   const argv = input.argv ?? input.host.argv;
-  const completionCommand = input.completionCommand ?? '__complete';
-  if (argv[0] === completionCommand) {
-    const candidates = completeCliWords(input.cli, { words: argv, completionCommand });
-    await writeIfPresent(input.host.writeStdout, candidates.map((candidate) => candidate.value).join('\n'));
-    input.host.setExitCode(0);
-    return 0;
-  }
-
   const invocation = input.cli.parse({ argv });
   if (invocation.status === 'invalid') {
     const format = input.formatDiagnostics ?? formatCliDiagnostics;
@@ -42,7 +60,25 @@ export async function runCliMain<Definition extends CliDefinition, Context>(
 
 /** Formats structured diagnostics as concise lines for a terminal. */
 export function formatCliDiagnostics(diagnostics: readonly CliDiagnostic[]): string {
-  return diagnostics.map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`).join('\n');
+  return diagnostics.map((diagnostic) => {
+    const context = [
+      'argvIndex' in diagnostic ? `argv=${String(diagnostic.argvIndex)}` : undefined,
+      'valueArgvIndex' in diagnostic
+        ? `value-argv=${String(diagnostic.valueArgvIndex)}`
+        : undefined,
+      'offset' in diagnostic && diagnostic.offset !== undefined
+        ? `offset=${String(diagnostic.offset)}`
+        : undefined,
+      'rawValue' in diagnostic ? `value=${diagnostic.rawValue}` : undefined,
+      'commandPath' in diagnostic
+        ? `command=${diagnostic.commandPath.join(' ')}`
+        : undefined,
+      'suggestions' in diagnostic && diagnostic.suggestions !== undefined
+        ? `suggestions=${diagnostic.suggestions.join(',')}`
+        : undefined
+    ].filter((entry): entry is string => entry !== undefined);
+    return `${diagnostic.code}: ${diagnostic.message}${context.length === 0 ? '' : ` [${context.join(' ')}]`}`;
+  }).join('\n');
 }
 
 /** Adapts a Node/Bun-like process object without importing runtime modules. */

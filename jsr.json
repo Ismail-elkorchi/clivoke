@@ -1,11 +1,11 @@
 {
   "$schema": "https://jsr.io/schema/config-file.v1.json",
   "name": "@ismail-elkorchi/clivoke",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "exports": "./src/index.ts",
   "imports": {
-    "@ismail-elkorchi/cli-core": "jsr:@ismail-elkorchi/cli-core@^0.2.0",
-    "argv-flags": "npm:argv-flags@^3.1.0"
+    "@ismail-elkorchi/cli-core": "jsr:@ismail-elkorchi/cli-core@^0.3.0",
+    "argv-flags": "jsr:@ismail-elkorchi/argv-flags@^4.0.0"
   },
   "publish": {
     "include": [

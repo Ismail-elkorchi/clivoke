@@ -9,7 +9,6 @@ import test from 'node:test';
 
 const execFileAsync = promisify(execFile);
 const repository = fileURLToPath(new URL('..', import.meta.url));
-const projects = fileURLToPath(new URL('../..', import.meta.url));
 const tsc = join(repository, 'node_modules', 'typescript', 'bin', 'tsc');
 
 test('the packed facade works offline in Node, Deno, and Bun', async (context) => {
@@ -17,8 +16,8 @@ test('the packed facade works offline in Node, Deno, and Bun', async (context) =
   context.after(() => rm(workspace, { recursive: true, force: true }));
 
   const archives = [];
-  archives.push(await pack(join(projects, 'cli-core'), workspace));
-  archives.push(await pack(join(projects, 'argv-flags'), workspace));
+  archives.push(await pack(join(repository, 'node_modules', '@ismail-elkorchi', 'cli-core'), workspace));
+  archives.push(await pack(join(repository, 'node_modules', 'argv-flags'), workspace));
   archives.push(await pack(repository, workspace));
   await writeFile(join(workspace, 'package.json'), `${JSON.stringify({ private: true, type: 'module' })}\n`);
   await run('npm', [
@@ -56,7 +55,9 @@ test('the packed facade works offline in Node, Deno, and Bun', async (context) =
 
 async function pack(cwd, destination) {
   const { stdout } = await run('npm', ['pack', '--json', '--pack-destination', destination], cwd);
-  return JSON.parse(stdout)[0].filename;
+  const archive = JSON.parse(stdout)[0];
+  assert.equal(archive.files.some((file) => file.path === 'src/index.ts'), true);
+  return archive.filename;
 }
 
 async function available(command) {

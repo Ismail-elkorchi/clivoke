@@ -1,19 +1,22 @@
 import type {
   CliAliasInput,
-  CliDiagnostic,
-  CliHandler,
-  CliHandlerContext,
+  CliCommand,
+  CliCompletion as CoreCompletion,
+  CliCoreDiagnostic,
+  CliDefinitionIssue as CoreDefinitionIssue,
   CliHandlers,
   CliProgram,
-  ParsedInvocationFailure,
+  ParsedInvocationFailure as CoreParsedInvocationFailure,
   ParsedInvocationSuccess
 } from '@ismail-elkorchi/cli-core';
 import type {
   BooleanOptionDefinition,
   CountOptionDefinition,
+  DefinitionIssue as ArgvDefinitionIssue,
   MultipleValueOptionDefinition,
+  ParseIssue,
+  ParsedValues,
   ScalarValueOptionDefinition,
-  ValueOf,
   ValueType
 } from 'argv-flags';
 
@@ -23,14 +26,14 @@ interface OptionPresentation {
 }
 
 /** One scalar value-taking option. */
-export type CliScalarOptionDefinition<Type extends ValueType> = ScalarValueOptionDefinition<Type> &
-  OptionPresentation & {
+export type CliScalarOptionDefinition<Type extends ValueType> =
+  ScalarValueOptionDefinition<Type> & OptionPresentation & {
     readonly valueLabel?: string;
   };
 
 /** One accumulating value-taking option. */
-export type CliMultipleOptionDefinition<Type extends ValueType> = MultipleValueOptionDefinition<Type> &
-  OptionPresentation & {
+export type CliMultipleOptionDefinition<Type extends ValueType> =
+  MultipleValueOptionDefinition<Type> & OptionPresentation & {
     readonly valueLabel?: string;
   };
 
@@ -44,7 +47,7 @@ type CliValueOptionDefinition<Type extends ValueType> = Type extends ValueType
   ? CliScalarOptionDefinition<Type> | CliMultipleOptionDefinition<Type>
   : never;
 
-/** Option definition accepted by the CLI. */
+/** Option definition accepted by Clivoke. */
 export type CliOptionDefinition =
   | CliValueOptionDefinition<ValueType>
   | CliBooleanOptionDefinition
@@ -61,7 +64,7 @@ export interface CliPositionalDefinition {
   readonly description?: string;
 }
 
-/** One command in the facade definition tree. */
+/** One command in the Clivoke definition tree. */
 export interface CliCommandDefinition {
   readonly name: string;
   readonly aliases?: readonly CliAliasInput[];
@@ -76,112 +79,199 @@ export interface CliCommandDefinition {
 /** A complete typed CLI definition. */
 export interface CliDefinition {
   readonly name: string;
-  readonly version?: string;
   readonly description?: string;
   readonly options?: CliOptionDefinitions;
   readonly commands?: readonly CliCommandDefinition[];
 }
 
-type OptionValue<Definition> = Definition extends { readonly type: 'boolean' }
-  ? boolean
-  : Definition extends { readonly type: 'count' }
-    ? number
-    : Definition extends { readonly type: infer Type }
-      ? Type extends ValueType
-        ? Definition extends { readonly multiple: true }
-          ? readonly ValueOf<Type>[]
-          : ValueOf<Type>
-        : never
-      : never;
-
-type GuaranteedName<Options extends CliOptionDefinitions> = {
-  [Name in keyof Options]-?: Options[Name] extends { readonly type: 'count' }
-    ? Name
-    : Options[Name] extends { readonly multiple: true }
-      ? Name
-      : Options[Name] extends { readonly required: true }
-        ? Name
-        : Options[Name] extends { readonly default: unknown }
-          ? Name
-          : never;
-}[keyof Options];
-
-type ParsedGlobalValues<Options extends CliOptionDefinitions> = {
-  readonly [Name in GuaranteedName<Options>]-?: OptionValue<Options[Name]>;
-} & {
-  readonly [Name in Exclude<keyof Options, GuaranteedName<Options>>]?: OptionValue<Options[Name]>;
-};
-
-type CommandsOf<Definition> = Definition extends { readonly commands?: infer Commands }
-  ? NonNullable<Commands> extends readonly CliCommandDefinition[]
-    ? NonNullable<Commands>[number]
-    : never
-  : never;
-
-type NestedCommands<Command> = Command extends { readonly commands?: infer Commands }
-  ? NonNullable<Commands> extends readonly CliCommandDefinition[]
-    ? NonNullable<Commands>[number] | NestedCommands<NonNullable<Commands>[number]>
-    : never
-  : never;
-
-type EveryCommand<Definition> = CommandsOf<Definition> | NestedCommands<CommandsOf<Definition>>;
-
-type LocalOptions<Definition> = EveryCommand<Definition> extends infer Command
-  ? Command extends { readonly options?: infer Options }
-    ? NonNullable<Options> extends CliOptionDefinitions
-      ? NonNullable<Options>
-      : never
-    : never
-  : never;
-
-type LocalOptionNames<Definition> = LocalOptions<Definition> extends infer Options
-  ? Options extends CliOptionDefinitions
-    ? keyof Options
-    : never
-  : never;
-
-type LocalOptionForName<Definition, Name extends PropertyKey> = LocalOptions<Definition> extends infer Options
-  ? Options extends CliOptionDefinitions
-    ? Name extends keyof Options
-      ? Options[Name]
-      : never
-    : never
-  : never;
-
 type GlobalOptions<Definition> = Definition extends { readonly options?: infer Options }
-  ? NonNullable<Options> extends CliOptionDefinitions
-    ? NonNullable<Options>
+  ? Options extends CliOptionDefinitions
+    ? Options
     : Readonly<Record<never, never>>
   : Readonly<Record<never, never>>;
 
-/** Typed values returned after successful parsing. Command-local values are optional until the command is narrowed. */
-export type CliParsedValues<Definition> = ParsedGlobalValues<GlobalOptions<Definition>> & {
-  readonly [Name in LocalOptionNames<Definition>]?: OptionValue<LocalOptionForName<Definition, Name>>;
+type CommandOptions<Command> = Command extends { readonly options?: infer Options }
+  ? Options extends CliOptionDefinitions
+    ? Options
+    : Readonly<Record<never, never>>
+  : Readonly<Record<never, never>>;
+
+type CommandPositionals<Command> = Command extends { readonly positionals?: infer Positionals }
+  ? Positionals extends readonly CliPositionalDefinition[]
+    ? Positionals
+    : readonly []
+  : readonly [];
+
+type CommandsOf<Definition> = Definition extends { readonly commands?: infer Commands }
+  ? Commands extends readonly CliCommandDefinition[]
+    ? Commands
+    : readonly []
+  : readonly [];
+
+type MergeOptions<Inherited, Local> = Inherited extends CliOptionDefinitions
+  ? Local extends CliOptionDefinitions
+    ? Readonly<Inherited & Local>
+    : Inherited
+  : Local;
+
+interface CommandTypeNode<
+  Key extends string,
+  Path extends readonly string[],
+  Options extends CliOptionDefinitions,
+  Positionals extends readonly CliPositionalDefinition[]
+> {
+  readonly key: Key;
+  readonly path: Path;
+  readonly options: Options;
+  readonly positionals: Positionals;
+}
+
+type NestedCommandNodes<
+  ProgramName extends string,
+  Commands extends readonly CliCommandDefinition[],
+  ParentPath extends readonly string[],
+  InheritedOptions extends CliOptionDefinitions
+> = Commands[number] extends infer Command
+  ? Command extends CliCommandDefinition
+    ? Command['name'] extends infer Name extends string
+      ? MergeOptions<InheritedOptions, CommandOptions<Command>> extends infer Options extends CliOptionDefinitions
+        ? CommandTypeNode<
+            `${ProgramName} ${JoinPath<readonly [...ParentPath, Name]>}`,
+            readonly [...ParentPath, Name],
+            Options,
+            CommandPositionals<Command>
+          > | NestedCommandNodes<
+            ProgramName,
+            CommandsOf<Command>,
+            readonly [...ParentPath, Name],
+            Options
+          >
+        : never
+      : never
+    : never
+  : never;
+
+type JoinPath<Path extends readonly string[]> = Path extends readonly [
+  infer First extends string,
+  ...infer Rest extends readonly string[]
+]
+  ? Rest extends readonly []
+    ? First
+    : `${First} ${JoinPath<Rest>}`
+  : '';
+
+type CommandNodes<Definition extends CliDefinition> =
+  | CommandTypeNode<Definition['name'], readonly [], GlobalOptions<Definition>, readonly []>
+  | NestedCommandNodes<
+      Definition['name'],
+      CommandsOf<Definition>,
+      readonly [],
+      GlobalOptions<Definition>
+    >;
+
+type SpecifiedOptions<Options extends CliOptionDefinitions> = {
+  readonly [Name in keyof Options]: boolean;
 };
 
-/** Presence map for every logical option in a definition tree. */
-export type CliSpecifiedOptions<Definition> = {
-  readonly [Name in keyof GlobalOptions<Definition>]: boolean;
-} & {
-  readonly [Name in Exclude<LocalOptionNames<Definition>, keyof GlobalOptions<Definition>>]?: boolean;
+type PositionalValue<Definition extends CliPositionalDefinition> =
+  Definition extends { readonly variadic: true }
+    ? readonly string[]
+    : Definition extends { readonly required: false }
+      ? string | undefined
+      : string;
+
+type PositionalValues<Positionals extends readonly CliPositionalDefinition[]> = {
+  readonly [Definition in Positionals[number] as Definition['name']]: PositionalValue<Definition>;
 };
 
-/** Successful CLI parse with typed option values. */
-export type CliParsedInvocationSuccess<Definition> = Omit<
-  ParsedInvocationSuccess,
-  'optionValues' | 'specifiedOptions'
+type InvocationForNode<Node> = Node extends CommandTypeNode<
+  infer Key,
+  infer Path,
+  infer Options,
+  infer Positionals
+>
+  ? Omit<
+      ParsedInvocationSuccess,
+      'commandKey' | 'command' | 'optionValues' | 'specifiedOptions' | 'positionalValues'
+    > & {
+      readonly commandKey: Key;
+      readonly command: Omit<CliCommand, 'key' | 'path'> & {
+        readonly key: Key;
+        readonly path: Path;
+      };
+      readonly optionValues: ParsedValues<Options>;
+      readonly specifiedOptions: SpecifiedOptions<Options>;
+      readonly positionalValues: PositionalValues<Positionals>;
+    }
+  : never;
+
+/** Successful invocation discriminated by its literal canonical command key. */
+export type CliParsedInvocationSuccess<Definition extends CliDefinition> =
+  InvocationForNode<CommandNodes<Definition>>;
+
+/** Rejected Clivoke invocation with unified diagnostics. */
+export type CliParsedInvocationFailure = Omit<
+  CoreParsedInvocationFailure,
+  'diagnostics'
 > & {
-  readonly optionValues: CliParsedValues<Definition>;
-  readonly specifiedOptions: CliSpecifiedOptions<Definition>;
+  readonly diagnostics: readonly CliDiagnostic[];
 };
 
-/** CLI parse result. */
-export type CliParsedInvocation<Definition> = CliParsedInvocationSuccess<Definition> | ParsedInvocationFailure;
+/** Clivoke parse result. */
+export type CliParsedInvocation<Definition extends CliDefinition> =
+  | CliParsedInvocationSuccess<Definition>
+  | CliParsedInvocationFailure;
+
+/** One option diagnostic retaining argv-flags' discriminated fields. */
+export type CliOptionDiagnostic = ParseIssue extends infer Issue
+  ? Issue extends ParseIssue
+    ? Issue & { readonly source: 'option'; readonly severity: 'error' }
+    : never
+  : never;
+
+/** Runtime diagnostic with explicit source ownership. */
+export type CliDiagnostic = CliCoreDiagnostic | CliOptionDiagnostic;
+
+/** Definition issue owned by Clivoke's outer definition shape. */
+export type CliFacadeDefinitionIssue =
+  | {
+      readonly source: 'clivoke';
+      readonly code: 'UNKNOWN_PROPERTY';
+      readonly message: string;
+      readonly definitionPath: readonly string[];
+      readonly property: string | symbol;
+    }
+  | {
+      readonly source: 'clivoke';
+      readonly code: 'INVALID_OPTIONS';
+      readonly message: string;
+      readonly commandPath: readonly string[];
+    };
+
+type SourcedCoreDefinitionIssue = CoreDefinitionIssue extends infer Issue
+  ? Issue extends CoreDefinitionIssue
+    ? Issue & { readonly source: 'command' }
+    : never
+  : never;
+
+type SourcedArgvDefinitionIssue = ArgvDefinitionIssue extends infer Issue
+  ? Issue extends ArgvDefinitionIssue
+    ? Issue & {
+        readonly source: 'option';
+        readonly commandPath: readonly string[];
+      }
+    : never
+  : never;
+
+/** Every definition issue reported by the single Clivoke compiler. */
+export type CliDefinitionIssue =
+  | CliFacadeDefinitionIssue
+  | SourcedCoreDefinitionIssue
+  | SourcedArgvDefinitionIssue;
 
 /** A compiled CLI. */
 export interface Cli<Definition extends CliDefinition = CliDefinition> {
   readonly program: CliProgram;
-  readonly version?: string;
   readonly parse: (input?: CliParseInput) => CliParsedInvocation<Definition>;
 }
 
@@ -194,14 +284,36 @@ export interface CliParseInput {
 /** A shell supported by completion script generation. */
 export type CliShell = 'bash' | 'zsh' | 'fish' | 'pwsh';
 
-/** Completion request using shell words and a cursor index. */
+/** Context supplied when built-in completion needs application values. */
+export type CliCompletionContext =
+  | {
+      readonly kind: 'option-value';
+      readonly commandPath: readonly string[];
+      readonly option: string;
+      readonly prefix: string;
+    }
+  | {
+      readonly kind: 'positional';
+      readonly commandPath: readonly string[];
+      readonly positional: string;
+      readonly prefix: string;
+    };
+
+/** Completion request using one explicit cursor coordinate system. */
 export interface CliCompletionRequest {
   readonly words: readonly string[];
+  /** Index in `words` of the word being completed; `words.length` means an empty trailing word. */
   readonly cursor?: number;
-  readonly currentWord?: string;
   readonly includeHidden?: boolean;
-  readonly completionCommand?: string;
+  readonly provideValues?: (context: CliCompletionContext) => readonly string[];
 }
+
+/** Completion candidate, including application-provided positional values. */
+export type CliCompletion = CoreCompletion | {
+  readonly kind: 'positional-value';
+  readonly value: string;
+  readonly positional: string;
+};
 
 /** Minimal process boundary used by runCliMain. */
 export interface CliMainHost {
@@ -218,21 +330,8 @@ export interface CliMainOutput {
   readonly exitCode?: number;
 }
 
-/** Context passed to a main-command handler. */
-export type CliMainHandlerContext<Definition, Context> = CliHandlerContext<
-  CliParsedInvocationSuccess<Definition>,
-  Context
->;
-
-/** One main-command handler. */
-export type CliMainHandler<Definition, Context> = CliHandler<
-  CliParsedInvocationSuccess<Definition>,
-  Context,
-  CliMainOutput | void
->;
-
-/** Main-command handlers keyed by canonical command key. */
-export type CliMainHandlers<Definition, Context> = CliHandlers<
+/** Main-command handlers restricted to literal canonical command keys. */
+export type CliMainHandlers<Definition extends CliDefinition, Context> = CliHandlers<
   CliParsedInvocationSuccess<Definition>,
   Context,
   CliMainOutput | void
@@ -245,8 +344,16 @@ export interface CliMainInput<Definition extends CliDefinition, Context> {
   readonly handlers: CliMainHandlers<Definition, Context>;
   readonly context: Context;
   readonly argv?: readonly string[];
-  readonly completionCommand?: string;
   readonly formatDiagnostics?: (diagnostics: readonly CliDiagnostic[]) => string;
+}
+
+/** Input for a dedicated completion executable. */
+export interface CliCompletionMainInput<Definition extends CliDefinition> {
+  readonly cli: Cli<Definition>;
+  readonly host: CliMainHost;
+  /** Protocol argv: cursor word index followed by the complete shell words. */
+  readonly argv?: readonly string[];
+  readonly provideValues?: (context: CliCompletionContext) => readonly string[];
 }
 
 /** Node/Bun-like process object accepted without importing `node:process`. */

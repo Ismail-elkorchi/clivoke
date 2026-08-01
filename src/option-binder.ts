@@ -1,9 +1,9 @@
 import {
-  createCliDiagnostic,
   createCliInvocationParser,
-  type CliDiagnostic,
+  createCliOptionDiagnostic,
   type CliInvocationParser,
   type CliOptionBinder,
+  type CliOptionBindingInput,
   type CliUnknownFlag
 } from '@ismail-elkorchi/cli-core';
 import {
@@ -19,80 +19,149 @@ type RuntimeDefinition<Definition> = Definition extends CliOptionDefinition
   ? Omit<Definition, 'description' | 'hidden' | 'valueLabel'>
   : never;
 
-type RuntimeParser = Parser<OptionDefinitionMap>;
+export type RuntimeParser = Parser<OptionDefinitionMap>;
 
-/** Creates a command-aware parser backed by one immutable argv-flags parser per command. */
-export function createArgvBinder(definitionsByCommand: ReadonlyMap<string, CliOptionDefinitions>): CliInvocationParser {
-  const parsers = new Map<string, RuntimeParser>();
-  for (const [commandKey, definitions] of definitionsByCommand) {
-    parsers.set(commandKey, compileOptions(definitions));
-  }
-  const bindOptions: CliOptionBinder = (input) => {
-    const parser = parsers.get(input.command.key);
-    if (parser === undefined) {
-      return {
-        status: 'invalid',
-        diagnostics: [createCliDiagnostic(
-          'CLI_OPTION_BINDER_MISSING',
-          'error',
-          `No option parser was compiled for ${input.command.key}.`,
-          { commandKey: input.command.key }
-        )]
-      };
-    }
-    const result = parser.parse({
-      argv: input.argv,
-      unknownFlagPolicy: 'collect',
-      flagPlacement: 'interspersed'
-    });
-    if (!result.success) {
-      return {
-        status: 'invalid',
-        diagnostics: Object.freeze(result.issues.map((issue) => translateIssue(issue, input.argvIndexes)))
-      };
-    }
-    return {
-      status: 'bound',
-      values: result.values,
-      specified: result.specified,
-      positionals: result.positionals,
-      afterDoubleDash: result.afterDoubleDash,
-      unknownFlags: Object.freeze(result.unknownFlags.map((flag) => translateUnknownFlag(flag, input.argvIndexes)))
-    };
-  };
-  return createCliInvocationParser(bindOptions);
-}
-
-function compileOptions(definitions: CliOptionDefinitions): RuntimeParser {
+/** Compiles one immutable parser from a command's effective option definitions. */
+export function compileOptionParser(definitions: CliOptionDefinitions): RuntimeParser {
   return createParserFromMap(stripPresentation(definitions));
 }
 
+/** Creates command routing and final binding over the same argv-flags grammar. */
+export function createArgvBinder(
+  parsers: ReadonlyMap<string, RuntimeParser>
+): CliInvocationParser {
+  const binder: CliOptionBinder = {
+    scan(input: CliOptionBindingInput) {
+      const result = parserFor(parsers, input).scan({
+        argv: input.argv,
+        flagPlacement: 'interspersed'
+      });
+      const unknownFlags = Object.freeze(
+        result.unknownFlags.map((flag) => translateUnknownFlag(flag, input.argvIndexes))
+      );
+      if (result.issues.length > 0) {
+        return {
+          status: 'invalid',
+          diagnostics: Object.freeze(
+            result.issues.map((issue) => translateIssue(issue, input.argvIndexes))
+          ),
+          unknownFlags
+        };
+      }
+      return {
+        status: 'scanned',
+        options: Object.freeze(result.options.map((option) => Object.freeze({
+          option: option.option,
+          flag: option.flag,
+          argvElement: option.argvElement,
+          argvIndex: originalIndex(option.argvIndex, input.argvIndexes),
+          ...(option.valueArgvIndex === undefined
+            ? {}
+            : { valueArgvIndex: originalIndex(option.valueArgvIndex, input.argvIndexes) })
+        }))),
+        arguments: Object.freeze(result.arguments.map((argument) => Object.freeze({
+          value: argument.value,
+          argvIndex: originalIndex(argument.argvIndex, input.argvIndexes)
+        }))),
+        afterDoubleDash: Object.freeze(result.afterDoubleDash.map((argument) => Object.freeze({
+          value: argument.value,
+          argvIndex: originalIndex(argument.argvIndex, input.argvIndexes)
+        }))),
+        ...(result.doubleDashIndex === undefined
+          ? {}
+          : { doubleDashArgvIndex: originalIndex(result.doubleDashIndex, input.argvIndexes) }),
+        unknownFlags
+      };
+    },
+    bind(input: CliOptionBindingInput) {
+      const result = parserFor(parsers, input).parse({
+        argv: input.argv,
+        unknownFlagPolicy: 'collect',
+        flagPlacement: 'interspersed'
+      });
+      const unknownFlags = Object.freeze(
+        result.unknownFlags.map((flag) => translateUnknownFlag(flag, input.argvIndexes))
+      );
+      if (!result.success) {
+        return {
+          status: 'invalid',
+          diagnostics: Object.freeze(
+            result.issues.map((issue) => translateIssue(issue, input.argvIndexes))
+          ),
+          unknownFlags
+        };
+      }
+      return {
+        status: 'bound',
+        values: result.values,
+        specified: result.specified,
+        positionals: result.positionals,
+        afterDoubleDash: result.afterDoubleDash,
+        unknownFlags
+      };
+    }
+  };
+  return createCliInvocationParser(Object.freeze(binder));
+}
+
+function parserFor(
+  parsers: ReadonlyMap<string, RuntimeParser>,
+  input: CliOptionBindingInput
+): RuntimeParser {
+  const parser = parsers.get(input.command.key);
+  if (parser === undefined) {
+    throw new TypeError(`Missing option parser for command ${input.command.key}.`);
+  }
+  return parser;
+}
+
 function stripPresentation(definitions: CliOptionDefinitions): OptionDefinitionMap {
-  const runtimeDefinitions: Record<string, RuntimeDefinition<CliOptionDefinition>> = {};
+  const runtimeDefinitions = Object.create(null) as Record<
+    string,
+    RuntimeDefinition<CliOptionDefinition>
+  >;
   for (const [name, definition] of Object.entries(definitions)) {
-    const { description: _description, hidden: _hidden, ...parsing } = definition;
-    if ('valueLabel' in parsing) {
-      const { valueLabel: _valueLabel, ...runtime } = parsing;
+    const {
+      description: _description,
+      hidden: _hidden,
+      ...withoutCommonPresentation
+    } = definition;
+    if ('valueLabel' in withoutCommonPresentation) {
+      const { valueLabel: _valueLabel, ...runtime } = withoutCommonPresentation;
       runtimeDefinitions[name] = runtime;
     } else {
-      runtimeDefinitions[name] = parsing;
+      runtimeDefinitions[name] = withoutCommonPresentation;
     }
   }
   return Object.freeze(runtimeDefinitions);
 }
 
-function translateIssue(issue: ParseIssue, argvIndexes: readonly number[]): CliDiagnostic {
+function translateIssue(
+  issue: ParseIssue,
+  argvIndexes: readonly number[]
+) {
   const { code, message, ...details } = issue;
-  return createCliDiagnostic(code, 'error', message, mapLocations(details, argvIndexes));
+  return createCliOptionDiagnostic(
+    code,
+    'error',
+    message,
+    mapLocations(details, argvIndexes)
+  );
 }
 
-function translateUnknownFlag(flag: UnknownFlag, argvIndexes: readonly number[]): CliUnknownFlag {
+function translateUnknownFlag(
+  flag: UnknownFlag,
+  argvIndexes: readonly number[]
+): CliUnknownFlag {
   return Object.freeze({
     argvElement: flag.argvElement,
     flag: flag.flag,
     argvIndex: originalIndex(flag.argvIndex, argvIndexes),
     ...(flag.offset === undefined ? {} : { offset: flag.offset }),
-    ...(flag.inlineValue === undefined ? {} : { inlineValue: flag.inlineValue })
+    ...(flag.inlineValue === undefined ? {} : { inlineValue: flag.inlineValue }),
+    ...(flag.suggestions === undefined
+      ? {}
+      : { suggestions: Object.freeze([...flag.suggestions]) })
   });
 }
 
@@ -112,5 +181,7 @@ function mapLocations(
 }
 
 function originalIndex(parserIndex: number, argvIndexes: readonly number[]): number {
-  return argvIndexes[parserIndex] ?? parserIndex;
+  const index = argvIndexes[parserIndex];
+  if (index === undefined) throw new TypeError('Option parser returned an invalid argv index.');
+  return index;
 }

@@ -1,37 +1,55 @@
-import { createCli, createCliHelp, runCliMain, value } from '../../src/index.ts';
-import {
-  // @ts-expect-error low-level command lookup belongs to cli-core
-  findCliCommand
-} from '../../src/index.ts';
-
-void findCliCommand;
+import { createCli, runCliMain, value } from '../../src/index.ts';
 
 const cli = createCli({
   name: 'ship',
   options: {
     verbose: { type: 'boolean', flags: ['-v'] },
-    retries: { type: 'integer', flags: ['--retries'], default: 2 },
-    quiet: { type: 'count', flags: ['-q'] }
+    retries: { type: 'integer', flags: ['--retries'], default: 2 }
   },
   commands: [{
     name: 'deploy',
     options: {
-      region: { type: value.choice(['eu', 'us']), flags: ['--region'], required: true }
-    }
+      target: {
+        type: value.choice(['eu', 'us']),
+        flags: ['--target'],
+        required: true
+      }
+    },
+    positionals: [
+      { name: 'service' },
+      { name: 'labels', required: false, variadic: true }
+    ]
+  }, {
+    name: 'inspect',
+    options: {
+      target: { type: 'integer', flags: ['--target'], required: true }
+    },
+    positionals: [{ name: 'file', required: false }]
   }]
 });
 
 const result = cli.parse({ argv: [] });
-createCliHelp(cli);
 if (result.status === 'parsed') {
-  const verbose: boolean | undefined = result.optionValues.verbose;
-  const retries: number = result.optionValues.retries;
-  const quiet: number = result.optionValues.quiet;
-  const region: 'eu' | 'us' | undefined = result.optionValues.region;
-  void verbose;
-  void retries;
-  void quiet;
-  void region;
+  if (result.commandKey === 'ship deploy') {
+    const target: 'eu' | 'us' = result.optionValues.target;
+    const service: string = result.positionalValues.service;
+    const labels: readonly string[] = result.positionalValues.labels;
+    void target;
+    void service;
+    void labels;
+  } else if (result.commandKey === 'ship inspect') {
+    const target: number = result.optionValues.target;
+    const file: string | undefined = result.positionalValues.file;
+    void target;
+    void file;
+  } else {
+    const retries: number = result.optionValues.retries;
+    // @ts-expect-error root invocations do not contain command-local options
+    result.optionValues.target;
+    // @ts-expect-error root invocations do not contain command-local positionals
+    result.positionalValues.service;
+    void retries;
+  }
 } else {
   // @ts-expect-error rejected invocations have no values
   result.optionValues;
@@ -46,10 +64,18 @@ void runCliMain({
     setExitCode() {}
   },
   handlers: {
-    ship: ({ invocation }) => {
-      const retries: number = invocation.optionValues.retries;
-      return { stdout: String(retries) };
-    }
+    ship: ({ invocation }) => ({ stdout: String(invocation.optionValues.retries) }),
+    'ship deploy': ({ invocation }) => {
+      const target: 'eu' | 'us' = invocation.optionValues.target;
+      const service: string = invocation.positionalValues.service;
+      return { stdout: `${target}:${service}` };
+    },
+    'ship inspect': ({ invocation }) => {
+      const target: number = invocation.optionValues.target;
+      return { stdout: String(target) };
+    },
+    // @ts-expect-error handlers accept only canonical command keys
+    typo: () => undefined
   },
   context: undefined
 });

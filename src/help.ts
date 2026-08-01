@@ -5,6 +5,6 @@ import type { Cli, CliDefinition } from './public-types.ts';
 export function createCliHelp<Definition extends CliDefinition>(
   cli: Cli<Definition>,
   commandPath: readonly string[] = []
-): CliHelp {
+): CliHelp | undefined {
   return createCoreCliHelp(cli.program, commandPath);
 }

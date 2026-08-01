@@ -1,16 +1,15 @@
 # Clivoke
 
-Turn one typed command definition into parsed invocations, help, completion,
-and explicit execution for Node, Deno, and Bun.
+Define, parse, complete, and invoke a typed command-line interface on Node,
+Deno, or Bun.
 
-The package provides the small end-to-end CLI layer between raw arguments and
-application handlers. Internally, `argv-flags` owns token grammar and typed
-option values, while `cli-core` owns command routing, positionals, help,
-completion candidates, and dispatch. This package owns their integration plus
-explicit process and shell adapters.
+Clivoke combines two independently useful packages: `argv-flags` owns raw
+option grammar and typed values, while `@ismail-elkorchi/cli-core` owns command
+semantics, positionals, help, completion data, and dispatch. Clivoke owns the
+command-aware argv integration and explicit process and shell adapters.
 
-It is not a prompt toolkit, terminal UI, configuration system, plugin host, or
-effects framework.
+It is intentionally not a prompt toolkit, TUI, configuration system, plugin
+host, or effects framework.
 
 ## Install
 
@@ -19,104 +18,107 @@ npm install clivoke
 deno add jsr:@ismail-elkorchi/clivoke
 ```
 
-## Define and parse a CLI
+## Define and parse
 
 ```ts
 import { createCli, value } from "clivoke";
 
 const cli = createCli({
   name: "ship",
-  version: "1.0.0",
   options: {
     verbose: {
       type: "boolean",
       flags: ["-v", "--verbose"],
       falseFlags: ["--no-verbose"],
+      default: false,
     },
   },
-  commands: [
-    {
-      name: "deploy",
-      aliases: ["d"],
-      options: {
-        region: {
-          type: value.choice(["eu", "us"]),
-          flags: ["-r", "--region"],
-          required: true,
-        },
+  commands: [{
+    name: "deploy",
+    aliases: ["d"],
+    options: {
+      region: {
+        type: value.choice(["eu", "us"]),
+        flags: ["-r", "--region"],
+        required: true,
       },
-      positionals: [{ name: "service" }],
-      acceptsAfterDoubleDash: true,
     },
-  ],
+    positionals: [{ name: "service" }],
+    acceptsAfterDoubleDash: true,
+  }],
 });
 
 const result = cli.parse({
   argv: ["-v", "deploy", "--region=eu", "api", "--", "--watch"],
 });
 
-if (result.status === "parsed") {
+if (result.status === "parsed" && result.commandKey === "ship deploy") {
   console.log(result.optionValues.region); // "eu"
   console.log(result.positionalValues.service); // "api"
   console.log(result.afterDoubleDash); // ["--watch"]
-} else {
+} else if (result.status === "invalid") {
   console.error(result.diagnostics);
 }
 ```
 
-Global values retain their inferred types. Command-local values are optional
-until runtime command selection is known. Failed results expose diagnostics,
-not partial values or defaults. Unknown flags can be rejected or collected with
-their complete argv index.
+`commandKey` is the discriminant for command-specific option and positional
+types. Required local options are required only in their command branch, and
+the same option name on sibling commands keeps its branch-specific type.
+Failed results contain structured diagnostics and unknown flags, never partial
+values or defaults.
 
-The option grammar is the `argv-flags` grammar: long flags, attached values,
-short clusters, explicit false flags, scalar repetition policies, multiple
-values, count options, `--`, and interspersed flags.
+Global and ancestor options are inherited by descendants. A command-local
+option must follow the command that defines it. A command cannot define both
+children and positionals because child names would otherwise be ambiguous with
+positional values.
 
-## Run through an explicit process host
+## Dispatch
 
 ```ts
-import {
-  createProcessCliHost,
-  runCliMain,
-} from "clivoke";
+import { createProcessCliHost, runCliMain } from "clivoke";
 
 await runCliMain({
   cli,
   host: createProcessCliHost(process),
   handlers: {
     "ship deploy": ({ invocation }) => ({
-      stdout: `deploying ${String(invocation.positionalValues.service)}`,
+      stdout: `deploying ${invocation.positionalValues.service}`,
     }),
   },
   context: undefined,
 });
 ```
 
-`runCliMain` writes only through the supplied host and sets an exit code without
-calling `process.exit()`. `createDenoCliHost(Deno)` provides the corresponding
-Deno adapter. Handler output is intentionally small: stdout text, stderr text,
-and an exit code. Application services belong in the handler context.
+Handler keys are restricted to canonical command keys, and each handler gets
+its command's exact invocation type. `runCliMain()` writes only through the
+supplied host and sets an exit code without calling `process.exit()`.
+`createDenoCliHost(Deno)` provides the equivalent Deno host.
 
 ## Help and completion
 
 ```ts
-import {
-  completeCliWords,
-  createCliHelp,
-  createCompletionScript,
-} from "clivoke";
+import { completeCliWords, createCliHelp } from "clivoke";
 
 const help = createCliHelp(cli, ["deploy"]);
 const candidates = completeCliWords(cli, {
-  words: ["ship", "__complete", "deploy", "--r"],
+  words: ["ship", "deploy", "--region", "e"],
+  cursor: 3,
 });
-const bash = createCompletionScript(cli, "bash");
 ```
 
-Help remains renderer-neutral. Completion scripts are available for Bash, Zsh,
-Fish, and PowerShell and delegate candidate generation back to the CLI. No
-files or shell profiles are modified by this package.
+Help retains explicit false flags, defaults, repetition, multiplicity, and
+finite choices. Unknown help paths return `undefined`.
+
+Completion distinguishes command names, flags, option values, and positional
+slots. `value.choice()` values are suggested automatically. Supply dynamic
+option or positional values with `provideValues`. Already-used scalar options
+that reject repetition are omitted.
+
+`createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
+dedicated companion executable (by default `<program>-complete`). Implement
+that executable with `runCliCompletion()`. Keeping completion separate avoids
+reserving a command name in the user's CLI. No shell profiles or files are
+modified.
 
 ## Runtime support
 
@@ -124,8 +126,7 @@ files or shell profiles are modified by this package.
 - Node.js 24 or later
 - Deno 2.6 or later
 - Bun 1.3 or later
-- Two focused runtime dependencies: `@ismail-elkorchi/cli-core` and
-  `argv-flags`
+- Runtime dependencies: `argv-flags` and `@ismail-elkorchi/cli-core`
 
 ## License
 
