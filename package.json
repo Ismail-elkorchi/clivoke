@@ -1,0 +1,80 @@
+{
+  "name": "clivoke",
+  "version": "0.1.0",
+  "description": "Typed command definitions, argv parsing, help, completion, and explicit execution.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "CHANGELOG.md",
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/rewrite-declaration-imports.mjs",
+    "prepack": "npm run build",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
+    "test": "npm run build && node --test tests/facade.test.mjs tests/main.test.mjs tests/shells.test.mjs",
+    "test:package": "node --test tests/packed-consumer.test.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:package"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ismail-elkorchi/clivoke.git"
+  },
+  "keywords": [
+    "cli",
+    "command-line",
+    "command-line-parser",
+    "argument-parser",
+    "option-parser",
+    "command-router",
+    "subcommands",
+    "flags",
+    "help",
+    "shell-completion",
+    "autocomplete",
+    "completion",
+    "typescript",
+    "node",
+    "deno",
+    "bun"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "author": "Ismail El Korchi",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Ismail-elkorchi/clivoke/issues"
+  },
+  "homepage": "https://github.com/Ismail-elkorchi/clivoke#readme",
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@ismail-elkorchi/cli-core": "^0.2.0",
+    "argv-flags": "^3.1.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^25.9.1",
+    "@typescript-eslint/eslint-plugin": "^8.59.4",
+    "@typescript-eslint/parser": "^8.59.4",
+    "eslint": "^10.4.0",
+    "eslint-plugin-n": "^18.0.1",
+    "eslint-plugin-promise": "^7.3.0",
+    "eslint-plugin-security": "^4.0.0",
+    "globals": "^17.6.0",
+    "typescript": "^6.0.3"
+  }
+}
