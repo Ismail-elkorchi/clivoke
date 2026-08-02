@@ -1,4 +1,16 @@
-import { completeCliWords, createCli, runCliMain, value } from '../../src/index.ts';
+import {
+  completeCliWords,
+  createCli,
+  runCliMain,
+  type CliDiagnostic,
+  value
+} from '../../src/index.ts';
+
+type ExpectNever<Value extends never> = Value;
+export type UnknownFlagOptionDiagnosticMustBeNever = ExpectNever<Extract<
+  CliDiagnostic,
+  { readonly source: 'option'; readonly code: 'UNKNOWN_FLAG' }
+>>;
 
 const cli = createCli({
   name: 'ship',
@@ -29,6 +41,10 @@ const cli = createCli({
 });
 
 const result = cli.parse({ argv: [] });
+
+const parseInputWithExtra = { argv: [], extra: true } as const;
+// @ts-expect-error parse settings are closed
+cli.parse(parseInputWithExtra);
 if (result.status === 'ready') {
   if (result.commandKey === 'ship deploy') {
     const target: 'eu' | 'us' = result.optionValues.target;
@@ -95,6 +111,26 @@ createCli({
 createCli({
   name: 'ship',
   options: {
+    labels: {
+      type: 'string',
+      flags: ['--label'],
+      multiple: true,
+      required: true,
+      // @ts-expect-error required multiple options cannot advertise a default
+      defaultLabel: 'none'
+    },
+    verbose: {
+      type: 'boolean',
+      flags: ['--verbose'],
+      // @ts-expect-error only value-taking options can be sensitive
+      sensitive: true
+    }
+  }
+});
+
+createCli({
+  name: 'ship',
+  options: {
     source: {
       type: 'string',
       flags: ['--source'],
@@ -129,6 +165,16 @@ const structured = cli.invoke({
   specifiedOptions: { verbose: false, retries: false, target: true },
   positionalValues: { service: 'api', labels: [] }
 });
+
+const structuredInputWithExtra = {
+  commandPath: ['deploy'],
+  optionValues: { verbose: false, retries: 2, target: 'eu' },
+  specifiedOptions: { verbose: false, retries: false, target: true },
+  positionalValues: { service: 'api', labels: [] },
+  extra: true
+} as const;
+// @ts-expect-error structured invocation inputs are closed
+cli.invoke(structuredInputWithExtra);
 if (structured.status === 'ready' && structured.commandKey === 'ship deploy') {
   const target: 'eu' | 'us' = structured.optionValues.target;
   void target;
@@ -175,6 +221,10 @@ void completeCliWords(cli, {
     return ['eu'];
   }
 });
+
+const completionRequestWithExtra = { words: ['ship'], extra: true } as const;
+// @ts-expect-error completion requests are closed
+void completeCliWords(cli, completionRequestWithExtra);
 
 createCli({
   name: 'ship',

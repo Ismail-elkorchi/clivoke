@@ -15,11 +15,20 @@ import type {
   CliShell
 } from './public-types.ts';
 
+type ExactCompletionRequest<Request extends CliCompletionRequest> = Request & Record<
+  Exclude<keyof Request, keyof CliCompletionRequest>,
+  never
+>;
+
 /** Returns grammar-aware completion candidates without invoking a shell. */
-export async function completeCliWords<Definition extends CliDefinition>(
+export async function completeCliWords<
+  Definition extends CliDefinition,
+  const Request extends CliCompletionRequest = CliCompletionRequest
+>(
   cli: Cli<Definition>,
-  request: CliCompletionRequest
+  input: ExactCompletionRequest<Request>
 ): Promise<readonly CliCompletion[]> {
+  const request = readCompletionRequest(input);
   const normalized = normalizeRequest(cli, request);
   const runtime = runtimeFor(cli);
   const route = runtime.invocationParser.route(cli.program, { argv: normalized.argv });
@@ -28,13 +37,18 @@ export async function completeCliWords<Definition extends CliDefinition>(
   if (parser === undefined) throw new TypeError(`Missing option parser for command ${command.key}.`);
   const scan = parser.scan({ argv: normalized.argv, flagPlacement: 'interspersed' });
   const currentIndex = normalized.argv.length - 1;
+  const commandIndexes = route.status === 'routed'
+    ? route.commandIndexes
+    : scan.arguments.slice(0, command.path.length).map((argument) => argument.argvIndex);
+  const commandIndexSet = new Set(commandIndexes);
   const partialInvocation: CliCompletionPartialInvocation = Object.freeze({
     commandPath: command.path,
     words: normalized.words,
     cursor: normalized.cursor,
     argv: normalized.argv,
     options: scan.options,
-    arguments: scan.arguments,
+    positionalArguments: Object.freeze(scan.arguments.filter((argument) =>
+      !commandIndexSet.has(argument.argvIndex))),
     passthroughArguments: scan.afterDoubleDash,
     unknownFlags: scan.unknownFlags
   });
@@ -92,7 +106,7 @@ export async function completeCliWords<Definition extends CliDefinition>(
     command.path,
     cli,
     scan.arguments,
-    route.status === 'routed' ? route.commandIndexes : [],
+    commandIndexes,
     currentIndex
   );
   if (positional === undefined || request.provideValues === undefined) {
@@ -144,6 +158,12 @@ export function createCompletionScript<Definition extends CliDefinition>(
   shell: CliShell,
   completionExecutable = `${cli.program.name}-complete`
 ): string {
+  if (shell !== 'bash' && shell !== 'zsh' && shell !== 'fish' && shell !== 'pwsh') {
+    throw new TypeError('Completion shell must be bash, zsh, fish, or pwsh.');
+  }
+  if (typeof completionExecutable !== 'string' || completionExecutable.length === 0) {
+    throw new TypeError('Completion executable must be a non-empty string.');
+  }
   const program = shellQuote(cli.program.name);
   const executable = shellQuote(completionExecutable);
   const identifier = shellIdentifier(cli.program.name);
@@ -157,6 +177,46 @@ export function createCompletionScript<Definition extends CliDefinition>(
     return `#compdef ${cli.program.name}\n_${identifier}() {\n  local output\n  local -a request_words candidates\n  request_words=("\${words[@]}")\n  request_words[$CURRENT]="$PREFIX"\n  output="$(${executable} lines "$((CURRENT - 1))" "\${request_words[@]}")"\n  candidates=("\${(@f)output}")\n  compadd -- "\${candidates[@]}"\n}\ncompdef _${identifier} ${program}\n`;
   }
   return `_${identifier}() { mapfile -t COMPREPLY < <(${executable} lines "$COMP_CWORD" "\${COMP_WORDS[@]}"); }\ncomplete -F _${identifier} ${program}\n`;
+}
+
+function readCompletionRequest(input: unknown): CliCompletionRequest {
+  if (!isPlainRecord(input)) throw new TypeError('Completion request must be a plain object.');
+  const values = Object.create(null) as Record<PropertyKey, unknown>;
+  for (const property of Reflect.ownKeys(input)) {
+    if (property !== 'words' && property !== 'cursor' && property !== 'includeHidden' &&
+        property !== 'provideValues') {
+      throw new TypeError(`Unknown completion request property ${String(property)}.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(input, property);
+    if (descriptor === undefined || !('value' in descriptor)) {
+      throw new TypeError(`Completion request property ${String(property)} must be a data property.`);
+    }
+    values[property] = descriptor.value;
+  }
+
+  const words = freezeWords(values['words']);
+  const cursor = values['cursor'];
+  if (cursor !== undefined && (
+    typeof cursor !== 'number' || !Number.isInteger(cursor) || cursor < 0 || cursor > words.length
+  )) {
+    throw new RangeError('Completion cursor must identify a word or an empty trailing word.');
+  }
+  const includeHidden = values['includeHidden'];
+  if (includeHidden !== undefined && typeof includeHidden !== 'boolean') {
+    throw new TypeError('Completion includeHidden must be a boolean.');
+  }
+  const provider = values['provideValues'];
+  if (provider !== undefined && typeof provider !== 'function') {
+    throw new TypeError('Completion provideValues must be a function.');
+  }
+  return Object.freeze({
+    words,
+    ...(cursor === undefined ? {} : { cursor }),
+    ...(includeHidden === undefined ? {} : { includeHidden }),
+    ...(provider === undefined ? {} : {
+      provideValues: provider as NonNullable<CliCompletionRequest['provideValues']>
+    })
+  });
 }
 
 function normalizeRequest<Definition extends CliDefinition>(
@@ -184,14 +244,14 @@ function normalizeRequest<Definition extends CliDefinition>(
   };
 }
 
-function freezeWords(input: readonly string[]): readonly string[] {
-  if (!Array.isArray(input)) throw new TypeError('Completion words must be an array.');
-  for (let index = 0; index < input.length; index += 1) {
-    if (!Object.hasOwn(input, index) || typeof input[index] !== 'string') {
-      throw new TypeError('Completion words must be a dense array of strings.');
-    }
-  }
-  return Object.freeze([...input]);
+function freezeWords(input: unknown): readonly string[] {
+  return freezeStringArray(input, 'Completion words');
+}
+
+function isPlainRecord(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const prototype: unknown = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 async function provideValues(
@@ -199,15 +259,27 @@ async function provideValues(
   context: CliCompletionContext
 ): Promise<readonly string[]> {
   const values = await request.provideValues?.(Object.freeze(context)) ?? [];
-  if (!Array.isArray(values)) {
-    throw new TypeError('Completion providers must return an array of strings.');
-  }
-  for (let index = 0; index < values.length; index += 1) {
-    if (!Object.hasOwn(values, index) || typeof values[index] !== 'string') {
-      throw new TypeError('Completion providers must return a dense array of strings.');
+  return freezeStringArray(values, 'Completion provider results');
+}
+
+function freezeStringArray(input: unknown, label: string): readonly string[] {
+  if (!Array.isArray(input)) throw new TypeError(`${label} must be an array of strings.`);
+  const output: string[] = [];
+  for (let index = 0; index < input.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(input, index);
+    if (descriptor === undefined || !('value' in descriptor) ||
+        typeof descriptor.value !== 'string') {
+      throw new TypeError(`${label} must be a dense array of strings.`);
     }
+    output.push(descriptor.value);
   }
-  return Object.freeze([...values]);
+  if (!Reflect.ownKeys(input).every((property) => property === 'length' || (
+    typeof property === 'string' && /^(?:0|[1-9]\d*)$/u.test(property) &&
+    Number(property) < input.length
+  ))) {
+    throw new TypeError(`${label} must be a dense array of strings.`);
+  }
+  return Object.freeze(output);
 }
 
 function activePositional<Definition extends CliDefinition>(

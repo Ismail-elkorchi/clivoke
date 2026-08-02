@@ -26,47 +26,68 @@ import type {
 interface OptionPresentation {
   readonly description?: string;
   readonly hidden?: boolean;
-  /** Prevents value-bearing diagnostics from being rendered by the default formatter. */
-  readonly sensitive?: boolean;
 }
 
 interface ValuePresentation {
   readonly valueLabel?: string;
   readonly valueDescription?: string;
+  /** Prevents value-bearing diagnostics from being rendered by the default formatter. */
+  readonly sensitive?: boolean;
 }
 
-type DefaultPresentation<Definition> = Definition extends { readonly multiple: true }
-  ? { readonly defaultLabel?: string }
-  : Definition extends { readonly default: unknown }
-    ? { readonly defaultLabel?: string }
-    : { readonly defaultLabel?: never };
+type ExplicitDefault<Definition> = Definition extends { readonly default: infer Default }
+  ? Default
+  : never;
+
+type PresencePresentation<Definition, ImplicitDefault extends boolean> =
+  | {
+      readonly required?: boolean;
+      readonly default?: never;
+      readonly defaultLabel?: never;
+    }
+  | (ExplicitDefault<Definition> extends never
+      ? never
+      : {
+          readonly required?: false;
+          readonly default: ExplicitDefault<Definition>;
+          readonly defaultLabel?: string;
+        })
+  | (ImplicitDefault extends true
+      ? {
+          readonly required?: false;
+          readonly default?: never;
+          readonly defaultLabel?: string;
+        }
+      : never);
 
 type ImplicitValuePresentation<Definition> =
   Definition extends { readonly valueMode: 'optional-inline' }
     ? { readonly implicitValueLabel?: string }
     : { readonly implicitValueLabel?: never };
 
-type PresentValueDefinition<Definition> = Definition extends object
-  ? Definition & OptionPresentation & ValuePresentation &
-      DefaultPresentation<Definition> & ImplicitValuePresentation<Definition>
+type PresentValueDefinition<Definition, ImplicitDefault extends boolean> =
+  Definition extends object
+  ? Omit<Definition, 'required' | 'default'> & OptionPresentation & ValuePresentation &
+      PresencePresentation<Definition, ImplicitDefault> & ImplicitValuePresentation<Definition>
   : never;
 
 /** One scalar value-taking option. */
 export type CliScalarOptionDefinition<Type extends ValueType> =
   ScalarValueOptionDefinition<Type> extends infer Definition
-    ? PresentValueDefinition<Definition>
+    ? PresentValueDefinition<Definition, false>
     : never;
 
 /** One accumulating value-taking option. */
 export type CliMultipleOptionDefinition<Type extends ValueType> =
   MultipleValueOptionDefinition<Type> extends infer Definition
-    ? PresentValueDefinition<Definition>
+    ? PresentValueDefinition<Definition, true>
     : never;
 
 /** One boolean option with optional explicit false spellings. */
 export type CliBooleanOptionDefinition = BooleanOptionDefinition extends infer Definition
   ? Definition extends object
-    ? Definition & OptionPresentation & DefaultPresentation<Definition>
+    ? Omit<Definition, 'required' | 'default'> & OptionPresentation &
+        PresencePresentation<Definition, false>
     : never
   : never;
 
@@ -280,8 +301,10 @@ export type CliInvocationResult<Definition extends CliDefinition> =
   | CliInvocationFailure;
 
 /** One option diagnostic retaining argv-flags' discriminated fields. */
-export type CliOptionDiagnostic = ParseIssue extends infer Issue
-  ? Issue extends ParseIssue
+type FacadeParseIssue = Exclude<ParseIssue, { readonly code: 'UNKNOWN_FLAG' }>;
+
+export type CliOptionDiagnostic = FacadeParseIssue extends infer Issue
+  ? Issue extends FacadeParseIssue
     ? Issue & {
         readonly source: 'option';
         readonly severity: 'error';
@@ -352,12 +375,21 @@ type StructuredInputForNode<Node> = Node extends CommandTypeNode<
 export type CliStructuredInvocationInput<Definition extends CliDefinition> =
   StructuredInputForNode<CommandNodes<Definition>>;
 
+type ExactStructuredInvocationInput<
+  Definition extends CliDefinition,
+  Input extends CliStructuredInvocationInput<Definition>
+> = Input extends unknown
+  ? Input & Record<Exclude<keyof Input, keyof CliStructuredInvocationInput<Definition>>, never>
+  : never;
+
 /** A compiled CLI. */
 export interface Cli<Definition extends CliDefinition = CliDefinition> {
   readonly program: CliProgram;
-  readonly parse: (input?: CliParseInput) => CliInvocationResult<Definition>;
-  readonly invoke: (
-    input: CliStructuredInvocationInput<Definition>
+  readonly parse: <const Input extends CliParseInput = CliParseInput>(
+    input?: Input & Record<Exclude<keyof Input, keyof CliParseInput>, never>
+  ) => CliInvocationResult<Definition>;
+  readonly invoke: <const Input extends CliStructuredInvocationInput<Definition>>(
+    input: ExactStructuredInvocationInput<Definition, Input>
   ) => CliInvocationResult<Definition>;
 }
 
@@ -377,7 +409,8 @@ export interface CliCompletionPartialInvocation {
   readonly cursor: number;
   readonly argv: readonly string[];
   readonly options: readonly ScannedOption[];
-  readonly arguments: readonly ScannedArgument[];
+  /** Non-option argv elements after command tokens, including the active positional word. */
+  readonly positionalArguments: readonly ScannedArgument[];
   readonly passthroughArguments: readonly ScannedArgument[];
   readonly unknownFlags: readonly UnknownFlag[];
 }

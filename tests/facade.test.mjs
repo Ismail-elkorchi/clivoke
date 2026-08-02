@@ -84,6 +84,37 @@ test('unknown-flag suggestions survive the facade boundary', () => {
   assert.deepEqual(result.unknownFlags[0]?.suggestions, ['--region']);
 });
 
+test('parse settings are a closed, accessor-safe runtime boundary', () => {
+  let reads = 0;
+  const accessor = {};
+  Object.defineProperty(accessor, 'argv', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return [];
+    }
+  });
+  assert.throws(() => cli.parse(accessor), /data property/u);
+  assert.equal(reads, 0);
+  assert.throws(
+    () => cli.parse({ argv: [], unknownFlagPolicy: 'ignore' }),
+    /Unknown-flag policy/u
+  );
+  assert.throws(() => cli.parse({ argv: [], extra: true }), /Unknown CLI parse input property/u);
+  assert.throws(() => cli.parse({ argv: new Array(1) }), /dense array of strings/u);
+
+  const argv = [];
+  Object.defineProperty(argv, 0, {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return '--verbose';
+    }
+  });
+  assert.throws(() => cli.parse({ argv }), /dense array of strings/u);
+  assert.equal(reads, 0);
+});
+
 test('command-local flags must follow their command in every value form', () => {
   for (const argv of [
     ['--region=eu', 'project', 'deploy', 'api'],
@@ -230,6 +261,20 @@ test('structured invocation uses the same command-specific semantic validation',
   assert.equal(invocation.status, 'ready');
   assert.deepEqual(invocation.source, { kind: 'structured', sourceId: 'test' });
   assert.equal(invocation.optionValues.region, 'eu');
+
+  let reads = 0;
+  const accessorInput = {};
+  Object.defineProperty(accessorInput, 'commandPath', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return ['project', 'deploy'];
+    }
+  });
+  const invalid = cli.invoke(accessorInput);
+  assert.equal(invalid.status, 'invalid');
+  assert.equal(invalid.diagnostics[0]?.code, 'CLI_INVALID_STRUCTURED_INVOCATION');
+  assert.equal(reads, 0);
 });
 
 test('definition inputs reject accessors and cycles without evaluating accessors', () => {
@@ -248,6 +293,22 @@ test('definition inputs reject accessors and cycles without evaluating accessors
       issue.code === 'INVALID_DEFINITION')
   );
   assert.equal(accessed, false);
+
+  let arrayReads = 0;
+  const flags = [];
+  Object.defineProperty(flags, 0, {
+    enumerable: true,
+    get() {
+      arrayReads += 1;
+      return '--unsafe';
+    }
+  });
+  assert.throws(
+    () => createCli({ name: 'ship', options: { unsafe: { type: 'string', flags } } }),
+    (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+      issue.code === 'INVALID_DEFINITION')
+  );
+  assert.equal(arrayReads, 0);
 
   const cyclic = { name: 'ship', commands: [] };
   cyclic.commands.push(cyclic);
@@ -328,6 +389,46 @@ test('option declaration failures are reported once at their origin', () => {
     (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
       issue.source === 'clivoke' && /optional-inline/u.test(issue.message))
   );
+  assert.throws(
+    () => createCli({
+      name: 'ship',
+      options: {
+        labels: {
+          type: 'string',
+          flags: ['--label'],
+          multiple: true,
+          required: true,
+          defaultLabel: 'none'
+        },
+        verbose: {
+          type: 'boolean',
+          flags: ['--verbose'],
+          sensitive: true
+        }
+      }
+    }),
+    (error) => error instanceof CliDefinitionError &&
+      error.issues.filter((issue) => issue.source === 'clivoke').length === 2
+  );
+});
+
+test('required multiple options are not presented as defaulted', () => {
+  const requiredMultipleCli = createCli({
+    name: 'tag',
+    options: {
+      labels: {
+        type: 'string',
+        flags: ['--label'],
+        multiple: true,
+        required: true
+      }
+    }
+  });
+  const option = createCliHelp(requiredMultipleCli)?.options[0];
+  assert.equal(option?.hasDefault, false);
+  const missing = requiredMultipleCli.parse({ argv: [] });
+  assert.equal(missing.status, 'invalid');
+  assert.equal(missing.diagnostics[0]?.code, 'MISSING_REQUIRED_OPTION');
 });
 
 test('completion providers are asynchronous and receive immutable scan context', async () => {
@@ -345,6 +446,7 @@ test('completion providers are asynchronous and receive immutable scan context',
   assert.equal(observed.partialInvocation.cursor, 5);
   assert.equal(observed.partialInvocation.words.at(-1), 'later');
   assert.ok(observed.partialInvocation.options.some((option) => option.option === 'verbose'));
+  assert.deepEqual(observed.partialInvocation.positionalArguments, []);
   assert.equal(Object.isFrozen(observed.partialInvocation), true);
   assert.ok(candidates.some((candidate) => candidate.value === 'east'));
 });
@@ -363,15 +465,21 @@ test('completion handles aliases, hidden options, empty words, and spaced values
       positionals: [{ name: 'service', required: false }]
     }]
   });
+  let positionalContext;
   const ordinary = await completeCliWords(completionCli, {
     words: ['ship', 'd', ''],
     cursor: 2,
-    async provideValues() {
+    async provideValues(context) {
+      positionalContext = context;
       return ['api worker'];
     }
   });
   assert.ok(ordinary.some((candidate) => candidate.value === '--visible'));
   assert.ok(ordinary.some((candidate) => candidate.value === 'api worker'));
+  assert.deepEqual(
+    positionalContext.partialInvocation.positionalArguments.map((argument) => argument.value),
+    ['']
+  );
   assert.equal(ordinary.some((candidate) => candidate.value === '--secret'), false);
   const includingHidden = await completeCliWords(completionCli, {
     words: ['ship', 'd', '--s'],
@@ -383,6 +491,42 @@ test('completion handles aliases, hidden options, empty words, and spaced values
     completeCliWords(completionCli, { words: ['ship'], cursor: 2 }),
     (error) => error instanceof RangeError && /cursor/u.test(error.message)
   );
+
+  let reads = 0;
+  const accessor = { words: ['ship'] };
+  Object.defineProperty(accessor, 'includeHidden', {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return true;
+    }
+  });
+  await assert.rejects(completeCliWords(completionCli, accessor), /data property/u);
+  assert.equal(reads, 0);
+
+  const words = [];
+  Object.defineProperty(words, 0, {
+    enumerable: true,
+    get() {
+      reads += 1;
+      return 'ship';
+    }
+  });
+  await assert.rejects(completeCliWords(completionCli, { words }), /dense array of strings/u);
+  assert.equal(reads, 0);
+  await assert.rejects(
+    completeCliWords(completionCli, { words: ['ship'], includeHidden: 'yes' }),
+    /includeHidden/u
+  );
+  await assert.rejects(
+    completeCliWords(completionCli, { words: ['ship'], extra: true }),
+    /Unknown completion request property/u
+  );
+});
+
+test('completion script generation rejects invalid adapter settings', () => {
+  assert.throws(() => createCompletionScript(cli, 'other'), /Completion shell/u);
+  assert.throws(() => createCompletionScript(cli, 'bash', ''), /Completion executable/u);
 });
 
 test('commands may provide completion after the option terminator', async () => {

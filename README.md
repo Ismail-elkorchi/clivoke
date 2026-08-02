@@ -68,6 +68,9 @@ the same option name on sibling commands keeps its branch-specific type.
 Failed results contain structured diagnostics and unknown flags, never partial
 values or defaults.
 
+Parse settings are closed: `argv` must be a dense string array and
+`unknownFlagPolicy` is either `"error"` or `"collect"`.
+
 Global and ancestor options are inherited by descendants. A command-local
 option must follow the command that defines it. Root positionals and root
 passthrough arguments are supported. Set `invokable: false` on the root or a
@@ -120,8 +123,9 @@ finite choices. Unknown help paths return `undefined`.
 Completion distinguishes command names, flags, option values, positional
 slots, and post-`--` input. `value.choice()` values are suggested automatically.
 Dynamic providers may be asynchronous and receive the command path plus an
-immutable scan of the partial invocation. Already-used scalar options that
-reject repetition are omitted.
+immutable scan of the partial invocation. Its `positionalArguments` exclude
+command tokens, so providers can use prior positional input directly.
+Already-used scalar options that reject repetition are omitted.
 
 `createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
 dedicated companion executable (by default `<program>-complete`). Implement
@@ -133,10 +137,11 @@ are modified.
 
 ## Diagnostics and failures
 
-Set `sensitive: true` on an option whose explicit value must not appear in
-default diagnostic output. The default formatter never prints raw option
-values and escapes terminal control characters. Structured diagnostics still
-retain their fields for an application-supplied formatter.
+Set `sensitive: true` on a value-taking option whose explicit value must not
+appear in default diagnostic output. The default formatter suppresses its raw
+value, parser message, and suggestions, and escapes terminal control
+characters. Structured diagnostics still retain their fields for an
+application-supplied formatter.
 
 `runCliMain()` writes successful deprecation warnings before dispatch. A
 handler returns `CliMainOutput` for an expected application failure. A thrown

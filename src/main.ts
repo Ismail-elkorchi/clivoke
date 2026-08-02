@@ -86,6 +86,7 @@ export async function runCliMain<Definition extends CliDefinition, Context>(
 /** Formats structured diagnostics as concise lines for a terminal. */
 export function formatCliDiagnostics(diagnostics: readonly CliDiagnostic[]): string {
   return diagnostics.map((diagnostic) => {
+    const sensitive = 'sensitive' in diagnostic && diagnostic.sensitive === true;
     const context = [
       'argvIndex' in diagnostic ? `argv=${String(diagnostic.argvIndex)}` : undefined,
       'valueArgvIndex' in diagnostic
@@ -97,12 +98,11 @@ export function formatCliDiagnostics(diagnostics: readonly CliDiagnostic[]): str
       'commandPath' in diagnostic
         ? `command=${sanitizeTerminalText(diagnostic.commandPath.join(' '))}`
         : undefined,
-      'suggestions' in diagnostic && diagnostic.suggestions !== undefined
+      !sensitive && 'suggestions' in diagnostic && diagnostic.suggestions !== undefined
         ? `suggestions=${diagnostic.suggestions.map(sanitizeTerminalText).join(',')}`
         : undefined
     ].filter((entry): entry is string => entry !== undefined);
-    const message = 'sensitive' in diagnostic && diagnostic.sensitive === true &&
-      'rawValue' in diagnostic
+    const message = sensitive && 'rawValue' in diagnostic
       ? 'Invalid value for sensitive option.'
       : diagnostic.message;
     return `${sanitizeTerminalText(diagnostic.code)}: ${sanitizeTerminalText(message)}${
@@ -113,7 +113,7 @@ export function formatCliDiagnostics(diagnostics: readonly CliDiagnostic[]): str
 function sanitizeTerminalText(value: string): string {
   return [...value].map((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
-    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
+    return /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character)
       ? `\\u{${codePoint.toString(16).padStart(4, '0')}}`
       : character;
   }).join('');

@@ -29,3 +29,10 @@
   parsers to one object prototype.
 - Added explicit value, implicit-value, and non-primitive default presentation
   labels.
+- Kept required multiple options distinct from implicitly defaulted multiple
+  options in public types and help metadata.
+- Closed and safely snapshotted parse, structured-invocation, and completion
+  inputs, and exposed completion positionals without command tokens.
+- Restricted sensitive metadata to value-taking options and prevented their
+  suggestions or Unicode terminal controls from leaking through the default
+  diagnostic formatter.

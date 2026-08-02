@@ -115,17 +115,34 @@ test('the default formatter redacts values and sanitizes terminal controls', () 
   assert.equal(formatted.includes(String.fromCodePoint(27)), false);
   assert.match(formatted, /Invalid value for sensitive option/u);
 
+  const suggestedSecret = formatCliDiagnostics([{
+    source: 'option',
+    code: 'INVALID_OPTION_VALUE',
+    severity: 'error',
+    message: 'Invalid token.',
+    option: 'token',
+    flag: '--token',
+    argvElement: '--token=private',
+    argvIndex: 0,
+    rawValue: 'private',
+    suggestions: ['private-corrected'],
+    sensitive: true
+  }]);
+  assert.doesNotMatch(suggestedSecret, /private/u);
+
   const controlled = formatCliDiagnostics([{
     source: 'command',
     code: 'TEST_WARNING',
     severity: 'warning',
-    message: `line${String.fromCodePoint(10)}escape${String.fromCodePoint(27)}`,
+    message: `line${String.fromCodePoint(10)}escape${String.fromCodePoint(27)}bidi${String.fromCodePoint(0x202e)}`,
     commandPath: [`bell${String.fromCodePoint(7)}`]
   }]);
   assert.equal(controlled.includes(String.fromCodePoint(10)), false);
   assert.equal(controlled.includes(String.fromCodePoint(27)), false);
   assert.equal(controlled.includes(String.fromCodePoint(7)), false);
+  assert.equal(controlled.includes(String.fromCodePoint(0x202e)), false);
   assert.match(controlled, /\\u\{000a\}/u);
+  assert.match(controlled, /\\u\{202e\}/u);
 });
 
 test('successful invocation warnings are rendered before dispatch', async () => {

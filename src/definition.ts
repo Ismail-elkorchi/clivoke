@@ -6,7 +6,8 @@ import {
   type CliDefinition as CoreDefinition,
   type CliInvocationResult as CoreInvocationResult,
   type CliOptionDefinition as CoreOptionDefinition,
-  type CliProgram
+  type CliProgram,
+  type StructuredInvocationInput as CoreStructuredInvocationInput
 } from '@ismail-elkorchi/cli-core';
 import {
   DefinitionError as ArgvDefinitionError,
@@ -176,23 +177,16 @@ export function createCli<const Definition extends CliDefinition>(
     translateInvocation(invocation, sensitiveOptions) as CliInvocationResult<Definition>;
   const cli: Cli<Definition> = Object.freeze({
     program,
-    parse(parseInput: CliParseInput = {}): CliInvocationResult<Definition> {
+    parse(parseInput?: CliParseInput): CliInvocationResult<Definition> {
+      const settings = readParseInput(parseInput);
       return translate(invocationParser.parse(program, {
-        ...(parseInput.argv === undefined ? {} : { argv: parseInput.argv }),
-        unknownFlagPolicy: parseInput.unknownFlagPolicy === 'collect' ? 'collect' : 'error'
+        ...(settings.argv === undefined ? {} : { argv: settings.argv }),
+        unknownFlagPolicy: settings.unknownFlagPolicy ?? 'error'
       }));
     },
     invoke(structuredInput: CliStructuredInvocationInput<Definition>): CliInvocationResult<Definition> {
-      return translate(createCoreInvocation(program, {
-        ...(structuredInput.sourceId === undefined ? {} : { sourceId: structuredInput.sourceId }),
-        commandPath: structuredInput.commandPath,
-        optionValues: structuredInput.optionValues,
-        specifiedOptions: structuredInput.specifiedOptions,
-        positionalValues: structuredInput.positionalValues,
-        ...(structuredInput.passthroughArguments === undefined
-          ? {}
-          : { passthroughArguments: structuredInput.passthroughArguments })
-      }));
+      const coreInput: CoreStructuredInvocationInput = structuredInput;
+      return translate(createCoreInvocation(program, coreInput));
     }
   });
   runtimes.set(cli, Object.freeze({ invocationParser, optionParsers }));
@@ -314,12 +308,13 @@ function snapshotCommands(
   ancestors: Set<object>,
   issues: CliDefinitionIssue[]
 ): readonly unknown[] | undefined {
-  if (!isDenseArray(input)) {
+  const entries = readDenseArray(input);
+  if (entries === undefined) {
     addInvalidIssue(issues, parentPath, 'Commands must be a dense array.');
     return undefined;
   }
   const commands: unknown[] = [];
-  for (const value of input) {
+  for (const value of entries) {
     if (!isPlainRecord(value)) {
       addInvalidIssue(issues, parentPath, 'Each command must be a plain object.');
       continue;
@@ -377,11 +372,12 @@ function snapshotOption(
     let value: unknown = descriptor.value;
     if (property === 'flags' || property === 'falseFlags' ||
         (property === 'default' && Array.isArray(value))) {
-      if (!isDenseArray(value)) {
+      const entries = readDenseArray(value);
+      if (entries === undefined) {
         addInvalidIssue(issues, path, `Option property ${String(property)} must be a dense array.`);
         continue;
       }
-      value = Object.freeze([...value]);
+      value = Object.freeze(entries);
     }
     output[property] = value;
   }
@@ -399,7 +395,8 @@ function validateOptionPresentation(
   if (!valueTaking && (
     Object.hasOwn(option, 'valueLabel') ||
     Object.hasOwn(option, 'valueDescription') ||
-    Object.hasOwn(option, 'implicitValueLabel')
+    Object.hasOwn(option, 'implicitValueLabel') ||
+    Object.hasOwn(option, 'sensitive')
   )) {
     addInvalidIssue(issues, path, 'Only value-taking options may define value presentation.');
   }
@@ -412,7 +409,7 @@ function validateOptionPresentation(
     );
   }
   if (Object.hasOwn(option, 'defaultLabel') &&
-      (type === 'count' || (
+      (option['required'] === true || type === 'count' || (
         option['multiple'] !== true &&
         !Object.hasOwn(option, 'default')
       ))) {
@@ -427,12 +424,13 @@ function snapshotObjectArray(
   allowed: ReadonlySet<string>,
   issues: CliDefinitionIssue[]
 ): readonly unknown[] | undefined {
-  if (!isDenseArray(input)) {
+  const entries = readDenseArray(input);
+  if (entries === undefined) {
     addInvalidIssue(issues, path, `${label} must be a dense array.`);
     return undefined;
   }
   const values: unknown[] = [];
-  for (const entry of input) {
+  for (const entry of entries) {
     if (!isPlainRecord(entry)) {
       addInvalidIssue(issues, path, `Each ${label.toLowerCase()} entry must be a plain object.`);
       continue;
@@ -449,12 +447,13 @@ function snapshotAliases(
   path: readonly string[],
   issues: CliDefinitionIssue[]
 ): readonly unknown[] | undefined {
-  if (!isDenseArray(input)) {
+  const entries = readDenseArray(input);
+  if (entries === undefined) {
     addInvalidIssue(issues, path, 'Aliases must be a dense array.');
     return undefined;
   }
   const aliases: unknown[] = [];
-  for (const alias of input) {
+  for (const alias of entries) {
     if (typeof alias === 'string') {
       aliases.push(alias);
       continue;
@@ -523,14 +522,51 @@ function ownDataValue(value: PlainRecord, property: PropertyKey): unknown {
   return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
 }
 
-function isDenseArray(value: unknown): value is readonly unknown[] {
-  if (!Array.isArray(value)) return false;
+function readDenseArray(value: unknown): readonly unknown[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries: unknown[] = [];
   for (let index = 0; index < value.length; index += 1) {
-    if (!Object.hasOwn(value, index)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(value, index);
+    if (descriptor === undefined || !('value' in descriptor)) return undefined;
+    entries.push(descriptor.value);
   }
-  return Reflect.ownKeys(value).every((property) =>
+  if (!Reflect.ownKeys(value).every((property) =>
     property === 'length' ||
-    (typeof property === 'string' && /^(?:0|[1-9]\d*)$/u.test(property) && Number(property) < value.length));
+    (typeof property === 'string' && /^(?:0|[1-9]\d*)$/u.test(property) && Number(property) < value.length))) {
+    return undefined;
+  }
+  return entries;
+}
+
+function readParseInput(input: unknown): CliParseInput {
+  if (input === undefined) return Object.freeze({});
+  if (!isPlainRecord(input)) throw new TypeError('CLI parse input must be a plain object.');
+
+  const output: { argv?: readonly string[]; unknownFlagPolicy?: 'error' | 'collect' } = {};
+  for (const property of Reflect.ownKeys(input)) {
+    if (property !== 'argv' && property !== 'unknownFlagPolicy') {
+      throw new TypeError(`Unknown CLI parse input property ${String(property)}.`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(input, property);
+    if (descriptor === undefined || !('value' in descriptor)) {
+      throw new TypeError(`CLI parse input property ${String(property)} must be a data property.`);
+    }
+    const value = descriptor.value;
+    if (property === 'argv') {
+      if (value === undefined) continue;
+      const argv = readDenseArray(value);
+      if (argv === undefined || argv.some((element) => typeof element !== 'string')) {
+        throw new TypeError('CLI argv must be a dense array of strings.');
+      }
+      output.argv = Object.freeze(argv) as readonly string[];
+      continue;
+    }
+    if (value !== undefined && value !== 'error' && value !== 'collect') {
+      throw new TypeError('Unknown-flag policy must be error or collect.');
+    }
+    if (value !== undefined) output.unknownFlagPolicy = value;
+  }
+  return Object.freeze(output);
 }
 
 function toCoreDefinition(definition: CliDefinition): CoreDefinition {
@@ -603,7 +639,8 @@ function optionPresentation(
     : undefined;
   const choices = Array.isArray(structuralChoices) ? structuralChoices : undefined;
   const multiple = 'multiple' in definition && definition.multiple === true;
-  const hasDefault = multiple || Object.hasOwn(definition, 'default');
+  const hasDefault = (multiple && definition.required !== true) ||
+    Object.hasOwn(definition, 'default');
   const defaultLabel = definition.defaultLabel ??
     (hasDefault ? formatDefault(definition.default) : undefined);
   const valuePresentation = {
@@ -723,7 +760,8 @@ function freezeOptionMap(options: CliOptionDefinitions): CliOptionDefinitions {
 
 function sensitiveOptionNames(options: CliOptionDefinitions): ReadonlySet<string> {
   return new Set(Object.entries(options)
-    .filter(([, definition]) => definition.sensitive === true)
+    .filter(([, definition]) => definition.type !== 'boolean' && definition.type !== 'count' &&
+      definition.sensitive === true)
     .map(([name]) => name));
 }
 

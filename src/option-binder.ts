@@ -151,7 +151,6 @@ function stripPresentation(definitions: CliOptionDefinitions): OptionDefinitionM
       const {
         description: _description,
         hidden: _hidden,
-        sensitive: _sensitive,
         ...runtime
       } = definition;
       runtimeDefinitions[name] = runtime;
@@ -160,12 +159,12 @@ function stripPresentation(definitions: CliOptionDefinitions): OptionDefinitionM
     const {
       description: _description,
       hidden: _hidden,
-      sensitive: _sensitive,
       defaultLabel: _defaultLabel,
       ...withoutCommonPresentation
     } = definition;
     if (withoutCommonPresentation.type !== 'boolean') {
       const {
+        sensitive: _sensitive,
         valueLabel: _valueLabel,
         valueDescription: _valueDescription,
         implicitValueLabel: _implicitValueLabel,
