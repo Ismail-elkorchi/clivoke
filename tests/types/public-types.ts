@@ -1,4 +1,4 @@
-import { createCli, runCliMain, value } from '../../src/index.ts';
+import { completeCliWords, createCli, runCliMain, value } from '../../src/index.ts';
 
 const cli = createCli({
   name: 'ship',
@@ -29,7 +29,7 @@ const cli = createCli({
 });
 
 const result = cli.parse({ argv: [] });
-if (result.status === 'parsed') {
+if (result.status === 'ready') {
   if (result.commandKey === 'ship deploy') {
     const target: 'eu' | 'us' = result.optionValues.target;
     const service: string = result.positionalValues.service;
@@ -101,6 +101,78 @@ createCli({
       // @ts-expect-error option definitions are closed
       typo: true
     }
+  }
+});
+
+createCli({
+  name: 'ship',
+  options: {
+    // @ts-expect-error implicit labels require optional-inline value mode
+    source: {
+      type: 'string',
+      flags: ['--source'],
+      implicitValueLabel: 'automatic'
+    },
+    // @ts-expect-error labels cannot advertise a default that does not exist
+    verbose: {
+      type: 'boolean',
+      flags: ['--verbose'],
+      defaultLabel: 'off'
+    }
+  }
+});
+
+const structured = cli.invoke({
+  sourceId: 'test',
+  commandPath: ['deploy'],
+  optionValues: { verbose: false, retries: 2, target: 'eu' },
+  specifiedOptions: { verbose: false, retries: false, target: true },
+  positionalValues: { service: 'api', labels: [] }
+});
+if (structured.status === 'ready' && structured.commandKey === 'ship deploy') {
+  const target: 'eu' | 'us' = structured.optionValues.target;
+  void target;
+}
+
+cli.invoke({
+  commandPath: ['deploy'],
+  optionValues: { verbose: false, retries: 2, target: 'eu' },
+  specifiedOptions: {
+    verbose: false,
+    retries: false,
+    // @ts-expect-error required options are necessarily specified
+    target: false
+  },
+  positionalValues: { service: 'api', labels: [] }
+});
+
+const grouped = createCli({
+  name: 'tool',
+  invokable: false,
+  commands: [{ name: 'project', invokable: false, commands: [{ name: 'status' }] }]
+});
+void runCliMain({
+  cli: grouped,
+  host: {
+    argv: [],
+    writeStdout() {},
+    writeStderr() {},
+    setExitCode() {}
+  },
+  handlers: {
+    'tool project status': () => undefined,
+    // @ts-expect-error grouping commands cannot have handlers
+    'tool project': () => undefined
+  },
+  context: undefined
+});
+
+void completeCliWords(cli, {
+  words: ['ship', 'deploy', '--target', 'e'],
+  async provideValues(context) {
+    const path: readonly string[] = context.partialInvocation.commandPath;
+    void path;
+    return ['eu'];
   }
 });
 

@@ -38,7 +38,7 @@ const cli = createCli({
         }
       },
       positionals: [{ name: 'service' }],
-      acceptsAfterDoubleDash: true
+      acceptsPassthroughArguments: true
     }]
   }]
 });
@@ -51,7 +51,7 @@ test('one grammar implementation routes and binds every supported value form', (
     ['--no-verbose', 'project', 'deploy', '--region', 'eu', 'api']
   ]) {
     const result = cli.parse({ argv });
-    assert.equal(result.status, 'parsed', JSON.stringify(result));
+    assert.equal(result.status, 'ready', JSON.stringify(result));
     assert.equal(result.command.key, 'ship project deploy');
     assert.equal(result.optionValues.region, 'eu');
     assert.equal(result.positionalValues.service, 'api');
@@ -80,7 +80,7 @@ test('unknown-flag suggestions survive the facade boundary', () => {
     argv: ['project', 'deploy', '--regoin', '--region=eu', 'api'],
     unknownFlagPolicy: 'collect'
   });
-  assert.equal(result.status, 'parsed');
+  assert.equal(result.status, 'ready');
   assert.deepEqual(result.unknownFlags[0]?.suggestions, ['--region']);
 });
 
@@ -99,11 +99,11 @@ test('ancestor options remain available to nested commands', () => {
   const result = cli.parse({
     argv: ['project', 'deploy', '--config', 'file', '--region', 'eu', 'api']
   });
-  assert.equal(result.status, 'parsed');
+  assert.equal(result.status, 'ready');
   assert.equal(result.optionValues.config, 'file');
 });
 
-test('help and completion retain defaults, choices, false flags, and value context', () => {
+test('help and completion retain defaults, choices, false flags, and value context', async () => {
   const help = createCliHelp(cli, ['project', 'deploy']);
   assert.ok(help);
   const verbose = help.options.find((option) => option.name === 'verbose');
@@ -114,27 +114,27 @@ test('help and completion retain defaults, choices, false flags, and value conte
   assert.equal(createCliHelp(cli, ['missing']), undefined);
 
   assert.deepEqual(
-    completeCliWords(cli, {
+    await completeCliWords(cli, {
       words: ['ship', 'project', 'deploy', '--region', 'e'],
       cursor: 4
     }),
     [{ kind: 'option-value', value: 'eu', option: 'region' }]
   );
   assert.deepEqual(
-    completeCliWords(cli, {
+    await completeCliWords(cli, {
       words: ['ship', 'project', 'deploy', '--region=u'],
       cursor: 3
     }),
     [{ kind: 'option-value', value: '--region=us', option: 'region' }]
   );
   assert.deepEqual(
-    completeCliWords(cli, {
+    (await completeCliWords(cli, {
       words: ['ship', 'project', 'deploy', '--region=eu', 'a'],
       cursor: 4,
       provideValues(context) {
         return context.kind === 'positional' ? ['api', 'worker'] : [];
       }
-    }).filter((candidate) => candidate.kind === 'positional-value'),
+    })).filter((candidate) => candidate.kind === 'positional-value'),
     [{ kind: 'positional-value', value: 'api', positional: 'service' }]
   );
   assert.doesNotMatch(createCompletionScript(cli, 'bash'), /__complete/u);
@@ -148,7 +148,7 @@ test('special option names remain ordinary own properties', () => {
   ]]);
   const special = createCli({ name: 'inspect', options });
   const result = special.parse({ argv: ['--prototype', 'safe'] });
-  assert.equal(result.status, 'parsed');
+  assert.equal(result.status, 'ready');
   assert.equal(result.optionValues['__proto__'], 'safe');
   assert.equal(Object.getPrototypeOf(result.optionValues), null);
 });
@@ -181,4 +181,245 @@ test('commands cannot make child names ambiguous with positional values', () => 
     (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
       issue.code === 'AMBIGUOUS_COMMAND_INPUT')
   );
+});
+
+test('root invocations and grouping commands have explicit command semantics', () => {
+  const rootCli = createCli({
+    name: 'format',
+    positionals: [{ name: 'files', variadic: true }],
+    acceptsPassthroughArguments: true
+  });
+  const root = rootCli.parse({ argv: ['one.ts', 'two.ts', '--', '--check'] });
+  assert.equal(root.status, 'ready');
+  assert.deepEqual(root.positionalValues.files, ['one.ts', 'two.ts']);
+  assert.deepEqual(root.passthroughArguments, ['--check']);
+
+  const grouped = createCli({
+    name: 'ship',
+    invokable: false,
+    commands: [{
+      name: 'project',
+      invokable: false,
+      commands: [{ name: 'status' }]
+    }]
+  });
+  const group = grouped.parse({ argv: ['project'] });
+  assert.equal(group.status, 'invalid');
+  assert.equal(group.diagnostics[0]?.code, 'CLI_SUBCOMMAND_REQUIRED');
+  assert.equal(grouped.parse({ argv: ['project', 'status'] }).status, 'ready');
+});
+
+test('structured invocation uses the same command-specific semantic validation', () => {
+  const invocation = cli.invoke({
+    sourceId: 'test',
+    commandPath: ['project', 'deploy'],
+    optionValues: {
+      verbose: false,
+      quiet: 0,
+      region: 'eu'
+    },
+    specifiedOptions: {
+      verbose: false,
+      quiet: false,
+      config: false,
+      region: true
+    },
+    positionalValues: { service: 'api' },
+    passthroughArguments: ['--watch']
+  });
+  assert.equal(invocation.status, 'ready');
+  assert.deepEqual(invocation.source, { kind: 'structured', sourceId: 'test' });
+  assert.equal(invocation.optionValues.region, 'eu');
+});
+
+test('definition inputs reject accessors and cycles without evaluating accessors', () => {
+  let accessed = false;
+  const accessorDefinition = { name: 'ship' };
+  Object.defineProperty(accessorDefinition, 'description', {
+    enumerable: true,
+    get() {
+      accessed = true;
+      return 'unsafe';
+    }
+  });
+  assert.throws(
+    () => createCli(accessorDefinition),
+    (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+      issue.code === 'INVALID_DEFINITION')
+  );
+  assert.equal(accessed, false);
+
+  const cyclic = { name: 'ship', commands: [] };
+  cyclic.commands.push(cyclic);
+  assert.throws(
+    () => createCli(cyclic),
+    (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+      issue.code === 'INVALID_DEFINITION' && /cycles/u.test(issue.message))
+  );
+});
+
+test('value parser objects keep their structural argv-flags contract', () => {
+  class UppercaseParser {
+    parse(raw) {
+      return { success: true, value: raw.toUpperCase() };
+    }
+
+    accepts(candidate) {
+      return typeof candidate === 'string';
+    }
+
+    snapshot(candidate) {
+      return candidate;
+    }
+  }
+
+  const structural = createCli({
+    name: 'inspect',
+    options: { name: { type: new UppercaseParser(), flags: ['--name'] } }
+  });
+  const result = structural.parse({ argv: ['--name=casey'] });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.optionValues.name, 'CASEY');
+
+  let reads = 0;
+  const accessorParser = {
+    accepts: (candidate) => typeof candidate === 'string',
+    snapshot: (candidate) => candidate
+  };
+  Object.defineProperty(accessorParser, 'parse', {
+    get() {
+      reads += 1;
+      return () => ({ success: true, value: 'unreachable' });
+    }
+  });
+  assert.throws(
+    () => createCli({
+      name: 'inspect',
+      options: { name: { type: accessorParser, flags: ['--name'] } }
+    }),
+    (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+      issue.source === 'option' && issue.code === 'INVALID_VALUE_PARSER')
+  );
+  assert.equal(reads, 0);
+});
+
+test('option declaration failures are reported once at their origin', () => {
+  assert.throws(
+    () => createCli({
+      name: 'ship',
+      options: { broken: { type: 'string', flags: ['not-a-flag'] } },
+      commands: [{ name: 'one' }, { name: 'two' }]
+    }),
+    (error) => error instanceof CliDefinitionError &&
+      error.issues.filter((issue) => issue.source === 'option').length === 1 &&
+      error.issues.find((issue) => issue.source === 'option')?.commandPath.length === 0
+  );
+  assert.throws(
+    () => createCli({
+      name: 'ship',
+      options: {
+        source: {
+          type: 'string',
+          flags: ['--source'],
+          implicitValueLabel: 'automatic'
+        }
+      }
+    }),
+    (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+      issue.source === 'clivoke' && /optional-inline/u.test(issue.message))
+  );
+});
+
+test('completion providers are asynchronous and receive immutable scan context', async () => {
+  let observed;
+  const candidates = await completeCliWords(cli, {
+    words: ['ship', '-v', 'project', 'deploy', '--region', 'e', 'later'],
+    cursor: 5,
+    async provideValues(context) {
+      observed = context;
+      return ['east'];
+    }
+  });
+  assert.equal(observed.kind, 'option-value');
+  assert.equal(observed.option, 'region');
+  assert.equal(observed.partialInvocation.cursor, 5);
+  assert.equal(observed.partialInvocation.words.at(-1), 'later');
+  assert.ok(observed.partialInvocation.options.some((option) => option.option === 'verbose'));
+  assert.equal(Object.isFrozen(observed.partialInvocation), true);
+  assert.ok(candidates.some((candidate) => candidate.value === 'east'));
+});
+
+test('completion handles aliases, hidden options, empty words, and spaced values', async () => {
+  const completionCli = createCli({
+    name: 'ship',
+    invokable: false,
+    commands: [{
+      name: 'deploy',
+      aliases: ['d'],
+      options: {
+        visible: { type: 'boolean', flags: ['--visible'] },
+        secret: { type: 'boolean', flags: ['--secret'], hidden: true }
+      },
+      positionals: [{ name: 'service', required: false }]
+    }]
+  });
+  const ordinary = await completeCliWords(completionCli, {
+    words: ['ship', 'd', ''],
+    cursor: 2,
+    async provideValues() {
+      return ['api worker'];
+    }
+  });
+  assert.ok(ordinary.some((candidate) => candidate.value === '--visible'));
+  assert.ok(ordinary.some((candidate) => candidate.value === 'api worker'));
+  assert.equal(ordinary.some((candidate) => candidate.value === '--secret'), false);
+  const includingHidden = await completeCliWords(completionCli, {
+    words: ['ship', 'd', '--s'],
+    cursor: 2,
+    includeHidden: true
+  });
+  assert.ok(includingHidden.some((candidate) => candidate.value === '--secret'));
+  await assert.rejects(
+    completeCliWords(completionCli, { words: ['ship'], cursor: 2 }),
+    (error) => error instanceof RangeError && /cursor/u.test(error.message)
+  );
+});
+
+test('commands may provide completion after the option terminator', async () => {
+  const candidates = await completeCliWords(cli, {
+    words: ['ship', 'project', 'deploy', '--region=eu', 'api', '--', '--wa'],
+    cursor: 6,
+    async provideValues(context) {
+      assert.equal(context.kind, 'passthrough');
+      assert.deepEqual(context.partialInvocation.passthroughArguments.map((entry) => entry.value), [
+        '--wa'
+      ]);
+      return ['--watch', '--write'];
+    }
+  });
+  assert.deepEqual(candidates, [
+    { kind: 'passthrough-value', value: '--watch' }
+  ]);
+});
+
+test('explicit presentation labels cover values the parser cannot describe generically', () => {
+  const presentationCli = createCli({
+    name: 'ship',
+    options: {
+      region: {
+        type: 'string',
+        flags: ['--region'],
+        valueMode: 'optional-inline',
+        implicitValue: 'auto',
+        default: 'eu',
+        valueDescription: 'Deployment region or auto selection.',
+        implicitValueLabel: 'auto',
+        defaultLabel: 'configured region'
+      }
+    }
+  });
+  const option = createCliHelp(presentationCli)?.options[0];
+  assert.equal(option?.valueDescription, 'Deployment region or auto selection.');
+  assert.equal(option?.implicitValueLabel, 'auto');
+  assert.equal(option?.defaultLabel, 'configured region');
 });

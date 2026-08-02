@@ -4,6 +4,7 @@ import {
   type CliInvocationParser,
   type CliOptionBinder,
   type CliOptionBindingInput,
+  type CliScannedOption,
   type CliUnknownFlag
 } from '@ismail-elkorchi/cli-core';
 import {
@@ -11,12 +12,22 @@ import {
   type OptionDefinitionMap,
   type ParseIssue,
   type Parser,
+  type ScannedOption,
   type UnknownFlag
 } from 'argv-flags';
 import type { CliOptionDefinition, CliOptionDefinitions } from './public-types.ts';
 
 type RuntimeDefinition<Definition> = Definition extends CliOptionDefinition
-  ? Omit<Definition, 'description' | 'hidden' | 'valueLabel'>
+  ? Omit<
+      Definition,
+      | 'description'
+      | 'hidden'
+      | 'sensitive'
+      | 'valueLabel'
+      | 'valueDescription'
+      | 'defaultLabel'
+      | 'implicitValueLabel'
+    >
   : never;
 
 export type RuntimeParser = Parser<OptionDefinitionMap>;
@@ -50,15 +61,8 @@ export function createArgvBinder(
       }
       return {
         status: 'scanned',
-        options: Object.freeze(result.options.map((option) => Object.freeze({
-          option: option.option,
-          flag: option.flag,
-          argvElement: option.argvElement,
-          argvIndex: originalIndex(option.argvIndex, input.argvIndexes),
-          ...(option.valueArgvIndex === undefined
-            ? {}
-            : { valueArgvIndex: originalIndex(option.valueArgvIndex, input.argvIndexes) })
-        }))),
+        options: Object.freeze(result.options.map((option) =>
+          translateScannedOption(option, input.argvIndexes))),
         arguments: Object.freeze(result.arguments.map((argument) => Object.freeze({
           value: argument.value,
           argvIndex: originalIndex(argument.argvIndex, input.argvIndexes)
@@ -104,6 +108,28 @@ export function createArgvBinder(
   return createCliInvocationParser(Object.freeze(binder));
 }
 
+function translateScannedOption(
+  option: ScannedOption,
+  argvIndexes: readonly number[]
+): CliScannedOption {
+  const location = {
+    option: option.option,
+    flag: option.flag,
+    argvElement: option.argvElement,
+    argvIndex: originalIndex(option.argvIndex, argvIndexes),
+    ...(option.offset === undefined ? {} : { offset: option.offset })
+  };
+  if (option.state !== 'explicit-value' && option.state !== 'unexpected-value') {
+    return Object.freeze(location);
+  }
+  return Object.freeze({
+    ...location,
+    rawValue: option.rawValue,
+    valueArgvIndex: originalIndex(option.valueArgvIndex, argvIndexes),
+    inline: option.inline
+  });
+}
+
 function parserFor(
   parsers: ReadonlyMap<string, RuntimeParser>,
   input: CliOptionBindingInput
@@ -121,13 +147,30 @@ function stripPresentation(definitions: CliOptionDefinitions): OptionDefinitionM
     RuntimeDefinition<CliOptionDefinition>
   >;
   for (const [name, definition] of Object.entries(definitions)) {
+    if (definition.type === 'count') {
+      const {
+        description: _description,
+        hidden: _hidden,
+        sensitive: _sensitive,
+        ...runtime
+      } = definition;
+      runtimeDefinitions[name] = runtime;
+      continue;
+    }
     const {
       description: _description,
       hidden: _hidden,
+      sensitive: _sensitive,
+      defaultLabel: _defaultLabel,
       ...withoutCommonPresentation
     } = definition;
-    if ('valueLabel' in withoutCommonPresentation) {
-      const { valueLabel: _valueLabel, ...runtime } = withoutCommonPresentation;
+    if (withoutCommonPresentation.type !== 'boolean') {
+      const {
+        valueLabel: _valueLabel,
+        valueDescription: _valueDescription,
+        implicitValueLabel: _implicitValueLabel,
+        ...runtime
+      } = withoutCommonPresentation;
       runtimeDefinitions[name] = runtime;
     } else {
       runtimeDefinitions[name] = withoutCommonPresentation;

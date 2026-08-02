@@ -25,6 +25,7 @@ import { createCli, value } from "clivoke";
 
 const cli = createCli({
   name: "ship",
+  invokable: false,
   options: {
     verbose: {
       type: "boolean",
@@ -44,7 +45,7 @@ const cli = createCli({
       },
     },
     positionals: [{ name: "service" }],
-    acceptsAfterDoubleDash: true,
+    acceptsPassthroughArguments: true,
   }],
 });
 
@@ -52,10 +53,10 @@ const result = cli.parse({
   argv: ["-v", "deploy", "--region=eu", "api", "--", "--watch"],
 });
 
-if (result.status === "parsed" && result.commandKey === "ship deploy") {
+if (result.status === "ready" && result.commandKey === "ship deploy") {
   console.log(result.optionValues.region); // "eu"
   console.log(result.positionalValues.service); // "api"
-  console.log(result.afterDoubleDash); // ["--watch"]
+  console.log(result.passthroughArguments); // ["--watch"]
 } else if (result.status === "invalid") {
   console.error(result.diagnostics);
 }
@@ -68,9 +69,16 @@ Failed results contain structured diagnostics and unknown flags, never partial
 values or defaults.
 
 Global and ancestor options are inherited by descendants. A command-local
-option must follow the command that defines it. A command cannot define both
-children and positionals because child names would otherwise be ambiguous with
+option must follow the command that defines it. Root positionals and root
+passthrough arguments are supported. Set `invokable: false` on the root or a
+command that only groups child commands. A command cannot define both children
+and positionals because child names would otherwise be ambiguous with
 positional values.
+
+Use `cli.invoke()` when an HTTP handler, TUI, test, or another adapter already
+has decoded values. Its input and result are narrowed by `commandPath` and go
+through the same command, required-option, positional, and passthrough
+validation as argv input.
 
 ## Dispatch
 
@@ -100,7 +108,7 @@ supplied host and sets an exit code without calling `process.exit()`.
 import { completeCliWords, createCliHelp } from "clivoke";
 
 const help = createCliHelp(cli, ["deploy"]);
-const candidates = completeCliWords(cli, {
+const candidates = await completeCliWords(cli, {
   words: ["ship", "deploy", "--region", "e"],
   cursor: 3,
 });
@@ -109,16 +117,32 @@ const candidates = completeCliWords(cli, {
 Help retains explicit false flags, defaults, repetition, multiplicity, and
 finite choices. Unknown help paths return `undefined`.
 
-Completion distinguishes command names, flags, option values, and positional
-slots. `value.choice()` values are suggested automatically. Supply dynamic
-option or positional values with `provideValues`. Already-used scalar options
-that reject repetition are omitted.
+Completion distinguishes command names, flags, option values, positional
+slots, and post-`--` input. `value.choice()` values are suggested automatically.
+Dynamic providers may be asynchronous and receive the command path plus an
+immutable scan of the partial invocation. Already-used scalar options that
+reject repetition are omitted.
 
 `createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
 dedicated companion executable (by default `<program>-complete`). Implement
-that executable with `runCliCompletion()`. Keeping completion separate avoids
-reserving a command name in the user's CLI. No shell profiles or files are
-modified.
+that executable with `runCliCompletion()`. Generated shell adapters use the
+newline value format; other callers can request JSON lines to preserve complete
+candidate metadata and values containing newlines. Keeping completion separate
+avoids reserving a command name in the user's CLI. No shell profiles or files
+are modified.
+
+## Diagnostics and failures
+
+Set `sensitive: true` on an option whose explicit value must not appear in
+default diagnostic output. The default formatter never prints raw option
+values and escapes terminal control characters. Structured diagnostics still
+retain their fields for an application-supplied formatter.
+
+`runCliMain()` writes successful deprecation warnings before dispatch. A
+handler returns `CliMainOutput` for an expected application failure. A thrown
+error is treated as unexpected: terminal output stays generic, while an
+optional `observeFailure` callback receives the original error for deliberate
+logging or telemetry.
 
 ## Runtime support
 

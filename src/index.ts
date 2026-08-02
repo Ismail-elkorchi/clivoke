@@ -16,7 +16,7 @@
  * });
  *
  * const result = cli.parse({ argv: ["deploy", "--region", "eu"] });
- * if (result.status === "parsed") console.log(result.optionValues.region);
+ * if (result.status === "ready") console.log(result.optionValues.region);
  * ```
  */
 export { completeCliWords, createCompletionScript } from './completion.ts';
@@ -35,24 +35,29 @@ export { value } from 'argv-flags';
 export type {
   Cli,
   CliCommandDefinition,
+  CliCompletion,
   CliCompletionContext,
-	CliCompletion,
-	CliCompletionMainInput,
+  CliCompletionMainInput,
+  CliCompletionPartialInvocation,
+  CliCompletionProvider,
   CliCompletionRequest,
-	CliDefinitionIssue,
-	CliDiagnostic,
+  CliDefinitionIssue,
+  CliDiagnostic,
   CliDefinition,
   CliMainHandlers,
   CliMainHost,
+  CliMainFailure,
   CliMainInput,
   CliMainOutput,
   CliOptionDefinition,
   CliOptionDefinitions,
-  CliParsedInvocation,
-  CliParsedInvocationSuccess,
+  CliInvocationFailure,
+  CliInvocationResult,
+  CliInvocationSuccess,
   CliParseInput,
   CliPositionalDefinition,
   CliShell,
+  CliStructuredInvocationInput,
   DenoLike,
   ProcessLike
 } from './public-types.ts';

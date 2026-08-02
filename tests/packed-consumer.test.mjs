@@ -82,7 +82,7 @@ const source = `
 import { createCli } from 'clivoke';
 const cli = createCli({ name: 'ship', commands: [{ name: 'deploy', options: { region: { type: 'string', flags: ['--region'], required: true } } }] });
 const result = cli.parse({ argv: ['deploy', '--region', 'eu'] });
-if (result.status !== 'parsed') throw new Error('parse failed');
+if (result.status !== 'ready') throw new Error('parse failed');
 console.log(JSON.stringify({ region: result.optionValues.region, command: result.command.key }));
 `;
 
@@ -90,5 +90,5 @@ const typeSource = `
 import { createCli } from 'clivoke';
 const cli = createCli({ name: 'ship', options: { count: { type: 'count', flags: ['-v'] } } });
 const result = cli.parse({ argv: [] });
-if (result.status === 'parsed') { const count: number = result.optionValues.count; void count; }
+if (result.status === 'ready') { const count: number = result.optionValues.count; void count; }
 `;

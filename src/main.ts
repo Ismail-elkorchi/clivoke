@@ -1,8 +1,8 @@
-import { dispatchCli } from '@ismail-elkorchi/cli-core';
+import { CliHandlerNotFoundError, dispatchCli } from '@ismail-elkorchi/cli-core';
 import { completeCliWords } from './completion.ts';
 import type {
-	CliCompletionMainInput,
-	CliDiagnostic,
+  CliCompletionMainInput,
+  CliDiagnostic,
   CliDefinition,
   CliMainHost,
   CliMainInput,
@@ -16,21 +16,32 @@ export async function runCliCompletion<Definition extends CliDefinition>(
   input: CliCompletionMainInput<Definition>
 ): Promise<number> {
   const argv = input.argv ?? input.host.argv;
-  const cursor = Number(argv[0]);
-  if (!Number.isInteger(cursor) || cursor < 0) {
-    await writeIfPresent(input.host.writeStderr, 'Completion cursor must be a non-negative integer.');
+  const output = argv[0];
+  if (output !== 'lines' && output !== 'jsonl') {
+    await writeIfPresent(input.host.writeStderr, 'Completion output must be lines or jsonl.');
     input.host.setExitCode(2);
     return 2;
   }
-  const candidates = completeCliWords(input.cli, {
-    words: argv.slice(1),
+  const cursor = Number(argv[1]);
+  if (!Number.isInteger(cursor) || cursor < 0 || cursor > argv.length - 2) {
+    await writeIfPresent(
+      input.host.writeStderr,
+      'Completion cursor must identify a supplied word or an empty trailing word.'
+    );
+    input.host.setExitCode(2);
+    return 2;
+  }
+  const candidates = await completeCliWords(input.cli, {
+    words: argv.slice(2),
     cursor,
     ...(input.provideValues === undefined ? {} : { provideValues: input.provideValues })
   });
-  await writeIfPresent(
-    input.host.writeStdout,
-    candidates.map((candidate) => candidate.value).join('\n')
-  );
+  await writeIfPresent(input.host.writeStdout, output === 'jsonl'
+    ? candidates.map((candidate) => JSON.stringify(candidate)).join('\n')
+    : candidates
+        .map((candidate) => candidate.value)
+        .filter(isLineSafe)
+        .join('\n'));
   input.host.setExitCode(0);
   return 0;
 }
@@ -48,11 +59,25 @@ export async function runCliMain<Definition extends CliDefinition, Context>(
     return 2;
   }
 
+  if (invocation.diagnostics.length > 0) {
+    const format = input.formatDiagnostics ?? formatCliDiagnostics;
+    await writeIfPresent(input.host.writeStderr, format(invocation.diagnostics));
+  }
   try {
     const output = await dispatchCli(invocation, input.handlers, input.context);
     return applyOutput(input.host, output);
   } catch (error) {
-    await writeIfPresent(input.host.writeStderr, error instanceof Error ? error.message : 'Command failed.');
+    if (error instanceof CliHandlerNotFoundError) {
+      await input.observeFailure?.({
+        kind: 'missing-handler',
+        commandKey: error.commandKey,
+        error
+      });
+      await writeIfPresent(input.host.writeStderr, 'No handler is registered for the selected command.');
+    } else {
+      await input.observeFailure?.({ kind: 'unexpected', error });
+      await writeIfPresent(input.host.writeStderr, 'Command failed.');
+    }
     input.host.setExitCode(1);
     return 1;
   }
@@ -69,16 +94,36 @@ export function formatCliDiagnostics(diagnostics: readonly CliDiagnostic[]): str
       'offset' in diagnostic && diagnostic.offset !== undefined
         ? `offset=${String(diagnostic.offset)}`
         : undefined,
-      'rawValue' in diagnostic ? `value=${diagnostic.rawValue}` : undefined,
       'commandPath' in diagnostic
-        ? `command=${diagnostic.commandPath.join(' ')}`
+        ? `command=${sanitizeTerminalText(diagnostic.commandPath.join(' '))}`
         : undefined,
       'suggestions' in diagnostic && diagnostic.suggestions !== undefined
-        ? `suggestions=${diagnostic.suggestions.join(',')}`
+        ? `suggestions=${diagnostic.suggestions.map(sanitizeTerminalText).join(',')}`
         : undefined
     ].filter((entry): entry is string => entry !== undefined);
-    return `${diagnostic.code}: ${diagnostic.message}${context.length === 0 ? '' : ` [${context.join(' ')}]`}`;
+    const message = 'sensitive' in diagnostic && diagnostic.sensitive === true &&
+      'rawValue' in diagnostic
+      ? 'Invalid value for sensitive option.'
+      : diagnostic.message;
+    return `${sanitizeTerminalText(diagnostic.code)}: ${sanitizeTerminalText(message)}${
+      context.length === 0 ? '' : ` [${context.join(' ')}]`}`;
   }).join('\n');
+}
+
+function sanitizeTerminalText(value: string): string {
+  return [...value].map((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159)
+      ? `\\u{${codePoint.toString(16).padStart(4, '0')}}`
+      : character;
+  }).join('');
+}
+
+function isLineSafe(value: string): boolean {
+  return ![...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || (codePoint >= 127 && codePoint <= 159);
+  });
 }
 
 /** Adapts a Node/Bun-like process object without importing runtime modules. */

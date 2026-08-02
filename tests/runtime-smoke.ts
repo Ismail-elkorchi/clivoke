@@ -15,7 +15,7 @@ const cli = createCli({
 });
 
 const result = cli.parse({ argv: ['deploy', '--region', 'eu'] });
-if (result.status !== 'parsed' || result.commandKey !== 'ship deploy' ||
+if (result.status !== 'ready' || result.commandKey !== 'ship deploy' ||
   result.optionValues.region !== 'eu') {
   throw new Error('Clivoke source entrypoint failed.');
 }
