@@ -2,8 +2,8 @@
 
 ## 0.1.0 - 2026-08-01
 
-- Added one typed command definition for parsing, help, completion, and explicit
-  execution using `cli-core` command semantics and `argv-flags` option grammar.
+- Added one typed command definition for parsing, validation, help, completion,
+  programmatic invocation, and explicit execution.
 - Added command-discriminated option and positional values plus exact,
   command-specific handler maps.
 - Unified definition errors and runtime diagnostics while retaining exact

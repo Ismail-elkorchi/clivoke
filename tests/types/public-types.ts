@@ -41,6 +41,10 @@ const cli = createCli({
 });
 
 const result = cli.parse({ argv: [] });
+const cliName: 'ship' = cli.name;
+void cliName;
+// @ts-expect-error dependency compilation state is not part of the Clivoke API
+cli.program;
 
 const parseInputWithExtra = { argv: [], extra: true } as const;
 // @ts-expect-error parse settings are closed

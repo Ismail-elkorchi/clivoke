@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,14 +11,17 @@ const execFileAsync = promisify(execFile);
 const repository = fileURLToPath(new URL('..', import.meta.url));
 const tsc = join(repository, 'node_modules', 'typescript', 'bin', 'tsc');
 
-test('the packed facade works offline in Node, Deno, and Bun', async (context) => {
+test('the packed package works offline in Node, Deno, and Bun', async (context) => {
   const workspace = await mkdtemp(join(tmpdir(), 'clivoke-consumer-'));
   context.after(() => rm(workspace, { recursive: true, force: true }));
 
   const archives = [];
-  archives.push(await pack(join(repository, 'node_modules', '@ismail-elkorchi', 'cli-core'), workspace));
-  archives.push(await pack(join(repository, 'node_modules', 'argv-flags'), workspace));
-  archives.push(await pack(repository, workspace));
+  archives.push(await packInstalled(
+    join(repository, 'node_modules', '@ismail-elkorchi', 'cli-core'),
+    workspace
+  ));
+  archives.push(await packInstalled(join(repository, 'node_modules', 'argv-flags'), workspace));
+  archives.push(await packProject(workspace));
   await writeFile(join(workspace, 'package.json'), `${JSON.stringify({ private: true, type: 'module' })}\n`);
   await run('npm', [
     'install',
@@ -42,6 +45,12 @@ test('the packed facade works offline in Node, Deno, and Bun', async (context) =
     'NodeNext',
     'consumer.ts'
   ], { cwd: workspace });
+  await run('deno', [
+    'check',
+    '--deny-import',
+    '--node-modules-dir=manual',
+    'consumer.ts'
+  ], workspace);
 
   for (const runtime of ['node', 'deno', 'bun']) {
     if (!(await available(runtime))) {
@@ -53,10 +62,34 @@ test('the packed facade works offline in Node, Deno, and Bun', async (context) =
   }
 });
 
-async function pack(cwd, destination) {
-  const { stdout } = await run('npm', ['pack', '--json', '--pack-destination', destination], cwd);
+async function packInstalled(cwd, destination) {
+  const { stdout } = await run('npm', [
+    'pack',
+    '--ignore-scripts',
+    '--json',
+    '--pack-destination',
+    destination
+  ], cwd);
   const archive = JSON.parse(stdout)[0];
   assert.equal(archive.files.some((file) => file.path === 'src/index.ts'), true);
+  return archive.filename;
+}
+
+async function packProject(destination) {
+  const obsoleteOutput = join(repository, 'dist', 'obsolete', 'index.js');
+  await mkdir(join(repository, 'dist', 'obsolete'), { recursive: true });
+  await writeFile(obsoleteOutput, 'throw new Error("obsolete output was packaged");\n');
+  const { stdout } = await run('npm', [
+    'pack',
+    '--json',
+    '--pack-destination',
+    destination
+  ], repository);
+  const archive = JSON.parse(stdout)[0];
+  const paths = new Set(archive.files.map((file) => file.path));
+  assert.equal(paths.has('dist/index.js'), true);
+  assert.equal(paths.has('dist/obsolete/index.js'), false);
+  assert.equal(paths.has('src/index.ts'), true);
   return archive.filename;
 }
 

@@ -6,8 +6,7 @@ import type {
   CliDefinitionIssue as CoreDefinitionIssue,
   CliHandlers,
   CliInvocation,
-  CliInvocationFailure as CoreInvocationFailure,
-  CliProgram
+  CliInvocationFailure as CoreInvocationFailure
 } from '@ismail-elkorchi/cli-core';
 import type {
   BooleanOptionDefinition,
@@ -301,10 +300,10 @@ export type CliInvocationResult<Definition extends CliDefinition> =
   | CliInvocationFailure;
 
 /** One option diagnostic retaining argv-flags' discriminated fields. */
-type FacadeParseIssue = Exclude<ParseIssue, { readonly code: 'UNKNOWN_FLAG' }>;
+type CliParseIssue = Exclude<ParseIssue, { readonly code: 'UNKNOWN_FLAG' }>;
 
-export type CliOptionDiagnostic = FacadeParseIssue extends infer Issue
-  ? Issue extends FacadeParseIssue
+export type CliOptionDiagnostic = CliParseIssue extends infer Issue
+  ? Issue extends CliParseIssue
     ? Issue & {
         readonly source: 'option';
         readonly severity: 'error';
@@ -317,7 +316,7 @@ export type CliOptionDiagnostic = FacadeParseIssue extends infer Issue
 export type CliDiagnostic = CliCoreDiagnostic | CliOptionDiagnostic;
 
 /** Definition issue owned by Clivoke's outer definition boundary. */
-export type CliFacadeDefinitionIssue =
+export type CliShapeDefinitionIssue =
   | {
       readonly source: 'clivoke';
       readonly code: 'UNKNOWN_PROPERTY';
@@ -349,7 +348,7 @@ type SourcedArgvDefinitionIssue = ArgvDefinitionIssue extends infer Issue
 
 /** Every definition issue reported by the single Clivoke compiler. */
 export type CliDefinitionIssue =
-  | CliFacadeDefinitionIssue
+  | CliShapeDefinitionIssue
   | SourcedCoreDefinitionIssue
   | SourcedArgvDefinitionIssue;
 
@@ -384,7 +383,7 @@ type ExactStructuredInvocationInput<
 
 /** A compiled CLI. */
 export interface Cli<Definition extends CliDefinition = CliDefinition> {
-  readonly program: CliProgram;
+  readonly name: Definition['name'];
   readonly parse: <const Input extends CliParseInput = CliParseInput>(
     input?: Input & Record<Exclude<keyof Input, keyof CliParseInput>, never>
   ) => CliInvocationResult<Definition>;

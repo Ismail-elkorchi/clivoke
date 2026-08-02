@@ -1,7 +1,8 @@
 import {
   completeCli,
   findCliCommand,
-  type CliCompletion as CoreCompletion
+  type CliCompletion as CoreCompletion,
+  type CliProgram
 } from '@ismail-elkorchi/cli-core';
 import type { ScannedOption } from 'argv-flags';
 import { runtimeFor } from './definition.ts';
@@ -31,7 +32,7 @@ export async function completeCliWords<
   const request = readCompletionRequest(input);
   const normalized = normalizeRequest(cli, request);
   const runtime = runtimeFor(cli);
-  const route = runtime.invocationParser.route(cli.program, { argv: normalized.argv });
+  const route = runtime.invocationParser.route(runtime.program, { argv: normalized.argv });
   const command = route.command;
   const parser = runtime.optionParsers.get(command.key);
   if (parser === undefined) throw new TypeError(`Missing option parser for command ${command.key}.`);
@@ -72,7 +73,7 @@ export async function completeCliWords<
     const attachedPrefix = activeValue.inline
       ? normalized.current.slice(0, normalized.current.length - activeValue.rawValue.length)
       : '';
-    const candidates = completeCli(cli.program, {
+    const candidates = completeCli(runtime.program, {
       commandPath: command.path,
       option: activeValue.option,
       prefix: activeValue.rawValue
@@ -96,7 +97,7 @@ export async function completeCliWords<
   const specifiedOptions = Object.create(null) as Record<string, boolean>;
   for (const option of command.options) specifiedOptions[option.name] = false;
   for (const option of scan.options) specifiedOptions[option.option] = true;
-  const coreCandidates = completeCli(cli.program, {
+  const coreCandidates = completeCli(runtime.program, {
     commandPath: command.path,
     prefix: normalized.current,
     includeHidden: request.includeHidden ?? false,
@@ -104,7 +105,7 @@ export async function completeCliWords<
   }) ?? [];
   const positional = activePositional(
     command.path,
-    cli,
+    runtime.program,
     scan.arguments,
     commandIndexes,
     currentIndex
@@ -156,7 +157,7 @@ function findActiveValue(
 export function createCompletionScript<Definition extends CliDefinition>(
   cli: Cli<Definition>,
   shell: CliShell,
-  completionExecutable = `${cli.program.name}-complete`
+  completionExecutable = `${cli.name}-complete`
 ): string {
   if (shell !== 'bash' && shell !== 'zsh' && shell !== 'fish' && shell !== 'pwsh') {
     throw new TypeError('Completion shell must be bash, zsh, fish, or pwsh.');
@@ -164,17 +165,17 @@ export function createCompletionScript<Definition extends CliDefinition>(
   if (typeof completionExecutable !== 'string' || completionExecutable.length === 0) {
     throw new TypeError('Completion executable must be a non-empty string.');
   }
-  const program = shellQuote(cli.program.name);
+  const program = shellQuote(cli.name);
   const executable = shellQuote(completionExecutable);
-  const identifier = shellIdentifier(cli.program.name);
+  const identifier = shellIdentifier(cli.name);
   if (shell === 'fish') {
     return `function __${identifier}_complete\n  set -l words (commandline -opc)\n  set -l current (commandline -ct)\n  ${executable} lines (count $words) $words "$current"\nend\ncomplete -c ${program} -f -a '(__${identifier}_complete)'\n`;
   }
   if (shell === 'pwsh') {
-    return `Register-ArgumentCompleter -Native -CommandName ${powerShellQuote(cli.program.name)} -ScriptBlock {\n  param($wordToComplete, $commandAst, $cursorPosition)\n  $words = @($commandAst.CommandElements | ForEach-Object { if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Value } else { $_.Extent.Text } })\n  $current = 0\n  for ($index = 0; $index -lt $commandAst.CommandElements.Count; $index++) {\n    if ($commandAst.CommandElements[$index].Extent.EndOffset -lt $cursorPosition) { $current = $index + 1 }\n  }\n  if ($current -ge $words.Count) { $words += $wordToComplete } else { $words[$current] = $wordToComplete }\n  & ${powerShellQuote(completionExecutable)} lines $current @words\n}\n`;
+    return `Register-ArgumentCompleter -Native -CommandName ${powerShellQuote(cli.name)} -ScriptBlock {\n  param($wordToComplete, $commandAst, $cursorPosition)\n  $words = @($commandAst.CommandElements | ForEach-Object { if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Value } else { $_.Extent.Text } })\n  $current = 0\n  for ($index = 0; $index -lt $commandAst.CommandElements.Count; $index++) {\n    if ($commandAst.CommandElements[$index].Extent.EndOffset -lt $cursorPosition) { $current = $index + 1 }\n  }\n  if ($current -ge $words.Count) { $words += $wordToComplete } else { $words[$current] = $wordToComplete }\n  & ${powerShellQuote(completionExecutable)} lines $current @words\n}\n`;
   }
   if (shell === 'zsh') {
-    return `#compdef ${cli.program.name}\n_${identifier}() {\n  local output\n  local -a request_words candidates\n  request_words=("\${words[@]}")\n  request_words[$CURRENT]="$PREFIX"\n  output="$(${executable} lines "$((CURRENT - 1))" "\${request_words[@]}")"\n  candidates=("\${(@f)output}")\n  compadd -- "\${candidates[@]}"\n}\ncompdef _${identifier} ${program}\n`;
+    return `#compdef ${cli.name}\n_${identifier}() {\n  local output\n  local -a request_words candidates\n  request_words=("\${words[@]}")\n  request_words[$CURRENT]="$PREFIX"\n  output="$(${executable} lines "$((CURRENT - 1))" "\${request_words[@]}")"\n  candidates=("\${(@f)output}")\n  compadd -- "\${candidates[@]}"\n}\ncompdef _${identifier} ${program}\n`;
   }
   return `_${identifier}() { mapfile -t COMPREPLY < <(${executable} lines "$COMP_CWORD" "\${COMP_WORDS[@]}"); }\ncomplete -F _${identifier} ${program}\n`;
 }
@@ -233,7 +234,7 @@ function normalizeRequest<Definition extends CliDefinition>(
   if (!Number.isInteger(cursor) || cursor < 0 || cursor > words.length) {
     throw new RangeError('Completion cursor must identify a word or an empty trailing word.');
   }
-  const start = words[0] === cli.program.name ? 1 : 0;
+  const start = words[0] === cli.name ? 1 : 0;
   const current = cursor < words.length ? words[cursor] ?? '' : '';
   const before = words.slice(start, Math.max(start, cursor));
   return {
@@ -282,14 +283,14 @@ function freezeStringArray(input: unknown, label: string): readonly string[] {
   return Object.freeze(output);
 }
 
-function activePositional<Definition extends CliDefinition>(
+function activePositional(
   commandPath: readonly string[],
-  cli: Cli<Definition>,
+  program: CliProgram,
   arguments_: readonly { readonly value: string; readonly argvIndex: number }[],
   commandIndexes: readonly number[],
   currentIndex: number
 ): string | undefined {
-  const command = findCliCommand(cli.program, commandPath);
+  const command = findCliCommand(program, commandPath);
   if (command === undefined || command.positionals.length === 0) return undefined;
   const commandIndexSet = new Set(commandIndexes);
   const completedCount = arguments_.filter((argument) =>

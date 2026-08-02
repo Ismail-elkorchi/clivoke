@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@ismail-elkorchi/cli-core": "../node_modules/@ismail-elkorchi/cli-core/dist/index.js",
+    "argv-flags": "../node_modules/argv-flags/dist/index.js"
+  }
+}

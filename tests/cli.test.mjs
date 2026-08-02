@@ -43,6 +43,13 @@ const cli = createCli({
   }]
 });
 
+test('a compiled CLI exposes its own stable identity and behavior', () => {
+  assert.equal(cli.name, 'ship');
+  assert.equal('program' in cli, false);
+  assert.equal(typeof cli.parse, 'function');
+  assert.equal(typeof cli.invoke, 'function');
+});
+
 test('one grammar implementation routes and binds every supported value form', () => {
   for (const argv of [
     ['-vq', 'project', 'd', '--region=eu', 'api', '--', '--watch'],
@@ -75,7 +82,7 @@ test('failed option parsing retains unknown flags and all useful details', () =>
   assert.equal(valueIssue?.rawValue, 'other');
 });
 
-test('unknown-flag suggestions survive the facade boundary', () => {
+test('unknown-flag suggestions survive the CLI boundary', () => {
   const result = cli.parse({
     argv: ['project', 'deploy', '--regoin', '--region=eu', 'api'],
     unknownFlagPolicy: 'collect'
@@ -184,7 +191,7 @@ test('special option names remain ordinary own properties', () => {
   assert.equal(Object.getPrototypeOf(result.optionValues), null);
 });
 
-test('one definition error aggregates facade, command, and option issues', () => {
+test('one definition error aggregates Clivoke, command, and option issues', () => {
   assert.throws(
     () => createCli({
       name: 'ship',

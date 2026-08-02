@@ -1,7 +1,7 @@
 {
   "name": "clivoke",
   "version": "0.1.0",
-  "description": "Typed command definitions, argv parsing, help, completion, and explicit execution.",
+  "description": "Type-safe CLI toolkit for commands, parsing, help, completion, and execution.",
   "type": "module",
   "sideEffects": false,
   "main": "./dist/index.js",
@@ -20,13 +20,14 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/rewrite-declaration-imports.mjs",
+    "clean": "node --eval \"import('node:fs/promises').then(({ rm }) => rm('dist', { recursive: true, force: true }))\"",
+    "build": "npm run clean && tsc -p tsconfig.json && node scripts/finalize-build.mjs",
     "prepack": "npm run build",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
-    "test": "npm run build && node --test tests/facade.test.mjs tests/main.test.mjs tests/shells.test.mjs",
+    "test": "npm run build && node --test tests/cli.test.mjs tests/main.test.mjs tests/shells.test.mjs",
     "test:package": "node --test tests/packed-consumer.test.mjs",
-    "test:source": "deno test --cached-only --node-modules-dir=manual --import-map=tests/jsr-import-map.json tests/runtime-smoke.ts && bun run tests/runtime-smoke.ts",
+    "test:source": "deno run --no-check --cached-only --node-modules-dir=manual --import-map=tests/runtime-import-map.json tests/runtime-smoke.ts && bun run tests/runtime-smoke.ts",
     "check:jsr": "deno publish --dry-run --allow-dirty",
     "check": "npm run lint && npm run typecheck && npm test && npm run test:package && npm run test:source"
   },

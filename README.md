@@ -1,15 +1,11 @@
 # Clivoke
 
-Define, parse, complete, and invoke a typed command-line interface on Node,
-Deno, or Bun.
+Build type-safe command-line applications for Node, Deno, and Bun from one
+definition.
 
-Clivoke combines two independently useful packages: `argv-flags` owns raw
-option grammar and typed values, while `@ismail-elkorchi/cli-core` owns command
-semantics, positionals, help, completion data, and dispatch. Clivoke owns the
-command-aware argv integration and explicit process and shell adapters.
-
-It is intentionally not a prompt toolkit, TUI, configuration system, plugin
-host, or effects framework.
+Clivoke keeps parsing, command routing, validation, help, completion,
+programmatic invocation, and dispatch aligned. Command-specific options and
+positionals remain connected to their handlers throughout the TypeScript API.
 
 ## Install
 
@@ -18,7 +14,7 @@ npm install clivoke
 deno add jsr:@ismail-elkorchi/clivoke
 ```
 
-## Define and parse
+## Quick start
 
 ```ts
 import { createCli, value } from "clivoke";
@@ -37,6 +33,7 @@ const cli = createCli({
   commands: [{
     name: "deploy",
     aliases: ["d"],
+    description: "Deploy one service.",
     options: {
       region: {
         type: value.choice(["eu", "us"]),
@@ -62,28 +59,45 @@ if (result.status === "ready" && result.commandKey === "ship deploy") {
 }
 ```
 
-`commandKey` is the discriminant for command-specific option and positional
-types. Required local options are required only in their command branch, and
-the same option name on sibling commands keeps its branch-specific type.
-Failed results contain structured diagnostics and unknown flags, never partial
-values or defaults.
+`createCli()` returns an immutable compiled CLI with a stable `name`, `parse()`,
+and `invoke()` API. Definitions and parse settings are closed in TypeScript and
+validated at runtime.
 
-Parse settings are closed: `argv` must be a dense string array and
-`unknownFlagPolicy` is either `"error"` or `"collect"`.
+## Commands and values
 
-Global and ancestor options are inherited by descendants. A command-local
-option must follow the command that defines it. Root positionals and root
-passthrough arguments are supported. Set `invokable: false` on the root or a
-command that only groups child commands. A command cannot define both children
-and positionals because child names would otherwise be ambiguous with
-positional values.
+The `commandKey` property discriminates successful invocations. Narrowing it to
+`"ship deploy"` gives exact types for that command's options and positionals.
+Required local options are required in their command branch, and equal option
+names on sibling commands retain their distinct value types.
 
-Use `cli.invoke()` when an HTTP handler, TUI, test, or another adapter already
-has decoded values. Its input and result are narrowed by `commandPath` and go
-through the same command, required-option, positional, and passthrough
-validation as argv input.
+Root options are global. Options declared by a command are inherited by its
+descendants, and command-local flags follow the command that declares them.
+Root and child commands can define positionals and accept post-`--` arguments.
+Set `invokable: false` on a command that groups child commands.
 
-## Dispatch
+Invalid results contain structured diagnostics and unknown flags. Successful
+values are available on ready results.
+
+## Programmatic invocation
+
+Use `cli.invoke()` when an HTTP endpoint, graphical interface, test, or another
+adapter already has decoded values:
+
+```ts
+const invocation = cli.invoke({
+  sourceId: "deployment-api",
+  commandPath: ["deploy"],
+  optionValues: { verbose: false, region: "eu" },
+  specifiedOptions: { verbose: false, region: true },
+  positionalValues: { service: "api" },
+  passthroughArguments: [],
+});
+```
+
+The input and result narrow by `commandPath` and use the same required-option,
+positional, and passthrough rules as argv parsing.
+
+## Run commands
 
 ```ts
 import { createProcessCliHost, runCliMain } from "clivoke";
@@ -100,9 +114,9 @@ await runCliMain({
 });
 ```
 
-Handler keys are restricted to canonical command keys, and each handler gets
-its command's exact invocation type. `runCliMain()` writes only through the
-supplied host and sets an exit code without calling `process.exit()`.
+Handler keys are restricted to invokable canonical command keys, and every
+handler receives its command's exact invocation type. `runCliMain()` applies
+handler output through the supplied host and sets the exit code.
 `createDenoCliHost(Deno)` provides the equivalent Deno host.
 
 ## Help and completion
@@ -117,45 +131,38 @@ const candidates = await completeCliWords(cli, {
 });
 ```
 
-Help retains explicit false flags, defaults, repetition, multiplicity, and
-finite choices. Unknown help paths return `undefined`.
+Help includes aliases, false flags, defaults, repetition, multiplicity, finite
+choices, and positional metadata. Unknown command paths return `undefined`.
 
 Completion distinguishes command names, flags, option values, positional
-slots, and post-`--` input. `value.choice()` values are suggested automatically.
-Dynamic providers may be asynchronous and receive the command path plus an
-immutable scan of the partial invocation. Its `positionalArguments` exclude
-command tokens, so providers can use prior positional input directly.
-Already-used scalar options that reject repetition are omitted.
+slots, and post-`--` input. Finite choices are suggested automatically.
+Asynchronous value providers receive the command path and an immutable partial
+invocation, enabling context-aware option, positional, and passthrough values.
 
 `createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
-dedicated companion executable (by default `<program>-complete`). Implement
-that executable with `runCliCompletion()`. Generated shell adapters use the
-newline value format; other callers can request JSON lines to preserve complete
-candidate metadata and values containing newlines. Keeping completion separate
-avoids reserving a command name in the user's CLI. No shell profiles or files
-are modified.
+dedicated companion executable, named `<program>-complete` by default.
+`runCliCompletion()` implements that executable with newline or JSON-lines
+output. JSON lines retain candidate metadata and safely represent values that
+contain newlines.
 
 ## Diagnostics and failures
 
-Set `sensitive: true` on a value-taking option whose explicit value must not
-appear in default diagnostic output. The default formatter suppresses its raw
-value, parser message, and suggestions, and escapes terminal control
-characters. Structured diagnostics still retain their fields for an
-application-supplied formatter.
+Set `sensitive: true` on a value option to redact its explicit value, parser
+message, and suggestions from default terminal diagnostics. The formatter also
+escapes terminal control characters. Applications retain access to structured
+diagnostics for custom rendering.
 
-`runCliMain()` writes successful deprecation warnings before dispatch. A
-handler returns `CliMainOutput` for an expected application failure. A thrown
-error is treated as unexpected: terminal output stays generic, while an
-optional `observeFailure` callback receives the original error for deliberate
-logging or telemetry.
+Successful deprecation warnings are rendered before dispatch. Expected
+application failures are returned as `CliMainOutput`. Unexpected errors receive
+a stable terminal message and can be observed through `observeFailure` for
+deliberate logging or telemetry.
 
 ## Runtime support
 
-- ESM only
+- ESM
 - Node.js 24 or later
 - Deno 2.6 or later
 - Bun 1.3 or later
-- Runtime dependencies: `argv-flags` and `@ismail-elkorchi/cli-core`
 
 ## License
 

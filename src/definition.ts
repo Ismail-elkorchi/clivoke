@@ -123,13 +123,14 @@ type ExactDefinition<Definition extends CliDefinition> = Definition & Record<
   : object);
 
 export interface CliRuntime {
+  readonly program: CliProgram;
   readonly invocationParser: ReturnType<typeof createArgvBinder>;
   readonly optionParsers: ReadonlyMap<string, RuntimeParser>;
 }
 
 const runtimes = new WeakMap<object, CliRuntime>();
 
-/** Compiles command semantics and argv grammar into one reusable facade. */
+/** Compiles one reusable, immutable command-line interface. */
 export function createCli<const Definition extends CliDefinition>(
   input: ExactDefinition<Definition>
 ): Cli<Definition> {
@@ -176,7 +177,7 @@ export function createCli<const Definition extends CliDefinition>(
   const translate = (invocation: CoreInvocationResult): CliInvocationResult<Definition> =>
     translateInvocation(invocation, sensitiveOptions) as CliInvocationResult<Definition>;
   const cli: Cli<Definition> = Object.freeze({
-    program,
+    name: program.name,
     parse(parseInput?: CliParseInput): CliInvocationResult<Definition> {
       const settings = readParseInput(parseInput);
       return translate(invocationParser.parse(program, {
@@ -189,18 +190,18 @@ export function createCli<const Definition extends CliDefinition>(
       return translate(createCoreInvocation(program, coreInput));
     }
   });
-  runtimes.set(cli, Object.freeze({ invocationParser, optionParsers }));
+  runtimes.set(cli, Object.freeze({ program, invocationParser, optionParsers }));
   return cli;
 }
 
-/** Returns private compiled integration data for other Clivoke modules. */
+/** Returns private compiled state for other Clivoke modules. */
 export function runtimeFor(cli: object): CliRuntime {
   const runtime = runtimes.get(cli);
   if (runtime === undefined) throw new TypeError('CLI was not created by createCli.');
   return runtime;
 }
 
-const facadeProperties = new Set([
+const definitionProperties = new Set([
   'name',
   'description',
   'options',
@@ -265,7 +266,7 @@ function snapshotCommandContainer(
   ancestors.add(input);
   const output = Object.create(null) as DefinitionContainer;
   const dynamicOutput: Record<PropertyKey, unknown> = output;
-  const allowed = root ? facadeProperties : commandProperties;
+  const allowed = root ? definitionProperties : commandProperties;
   copyKnownDataProperties(input, dynamicOutput, allowed, path, issues);
 
   const options = dynamicOutput['options'];
@@ -622,22 +623,25 @@ function optionPresentation(
       ...common,
       kind: 'boolean' as const,
       ...(definition.falseFlags === undefined ? {} : { falseFlags: definition.falseFlags }),
-      ...(definition.required === undefined ? {} : { required: definition.required }),
       ...(definition.repeat === undefined ? {} : { repeat: definition.repeat })
     };
-    return hasDefault
-      ? {
-          ...booleanPresentation,
-          hasDefault: true,
-          ...(defaultLabel === undefined ? {} : { defaultLabel })
-        }
-      : { ...booleanPresentation, hasDefault: false };
+    if (definition.required === true) {
+      return { ...booleanPresentation, required: true, hasDefault: false };
+    }
+    if (hasDefault) {
+      return {
+        ...booleanPresentation,
+        hasDefault: true,
+        ...(defaultLabel === undefined ? {} : { defaultLabel })
+      };
+    }
+    return { ...booleanPresentation, hasDefault: false };
   }
   if (definition.type === 'count') return { ...common, kind: 'count' };
   const structuralChoices = typeof definition.type === 'object' && definition.type !== null
     ? structuralDataValue(definition.type, 'choices')
     : undefined;
-  const choices = Array.isArray(structuralChoices) ? structuralChoices : undefined;
+  const choices = readStringArray(structuralChoices);
   const multiple = 'multiple' in definition && definition.multiple === true;
   const hasDefault = (multiple && definition.required !== true) ||
     Object.hasOwn(definition, 'default');
@@ -650,29 +654,56 @@ function optionPresentation(
     ...(definition.valueDescription === undefined
       ? {}
       : { valueDescription: definition.valueDescription }),
-    ...(definition.required === undefined ? {} : { required: definition.required }),
-    ...(multiple ? { multiple: true } : {}),
-    ...('repeat' in definition && definition.repeat !== undefined
-      ? { repeat: definition.repeat }
-      : {}),
     ...(choices === undefined ? {} : { valueCandidates: choices })
   };
-  const withDefault = hasDefault
+  const withValueMode = definition.valueMode === 'optional-inline'
     ? {
         ...valuePresentation,
-        hasDefault: true as const,
-        ...(defaultLabel === undefined ? {} : { defaultLabel })
-      }
-    : { ...valuePresentation, hasDefault: false as const };
-  return definition.valueMode === 'optional-inline'
-    ? {
-        ...withDefault,
-        valueMode: 'optional-inline',
+        valueMode: 'optional-inline' as const,
         ...(definition.implicitValueLabel === undefined
           ? {}
           : { implicitValueLabel: definition.implicitValueLabel })
       }
-    : { ...withDefault, valueMode: 'required' };
+    : { ...valuePresentation, valueMode: 'required' as const };
+  if (multiple) {
+    if (definition.required === true) {
+      return { ...withValueMode, multiple: true, required: true, hasDefault: false };
+    }
+    return {
+      ...withValueMode,
+      multiple: true,
+      hasDefault: true,
+      ...(defaultLabel === undefined ? {} : { defaultLabel })
+    };
+  }
+  const scalar = {
+    ...withValueMode,
+    ...('repeat' in definition && definition.repeat !== undefined
+      ? { repeat: definition.repeat }
+      : {})
+  };
+  if (definition.required === true) {
+    return { ...scalar, required: true, hasDefault: false };
+  }
+  if (hasDefault) {
+    return {
+      ...scalar,
+      hasDefault: true,
+      ...(defaultLabel === undefined ? {} : { defaultLabel })
+    };
+  }
+  return { ...scalar, hasDefault: false };
+}
+
+function readStringArray(value: unknown): readonly string[] | undefined {
+  const entries = readDenseArray(value);
+  if (entries === undefined) return undefined;
+  const strings: string[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'string') return undefined;
+    strings.push(entry);
+  }
+  return Object.freeze(strings);
 }
 
 function structuralDataValue(value: object, property: PropertyKey): unknown {
