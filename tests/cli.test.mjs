@@ -80,6 +80,10 @@ test('failed option parsing retains unknown flags and all useful details', () =>
     diagnostic.code === 'INVALID_OPTION_VALUE');
   assert.equal(valueIssue?.argvIndex, 3);
   assert.equal(valueIssue?.rawValue, 'other');
+  const unknownIssue = result.diagnostics.find((diagnostic) =>
+    diagnostic.code === 'CLI_UNKNOWN_FLAG');
+  assert.equal(unknownIssue?.argvIndex, 2);
+  assert.equal(unknownIssue?.flag, '--wat');
 });
 
 test('unknown-flag suggestions survive the CLI boundary', () => {

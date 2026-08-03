@@ -3,6 +3,7 @@ import {
   createCliInvocation as createCoreInvocation,
   defineCli as defineCoreCli,
   type CliCommandDefinition as CoreCommandDefinition,
+  type CliCoreDiagnostic,
   type CliDefinition as CoreDefinition,
   type CliInvocationResult as CoreInvocationResult,
   type CliOptionDefinition as CoreOptionDefinition,
@@ -174,16 +175,24 @@ export function createCli<const Definition extends CliDefinition>(
     sensitiveOptions.set(scope.key, sensitiveOptionNames(scope.options));
   }
   const invocationParser = createArgvBinder(optionParsers);
-  const translate = (invocation: CoreInvocationResult): CliInvocationResult<Definition> =>
-    translateInvocation(invocation, sensitiveOptions) as CliInvocationResult<Definition>;
+  const translate = (
+    invocation: CoreInvocationResult,
+    unknownFlagPolicy: 'error' | 'collect' = 'error'
+  ): CliInvocationResult<Definition> =>
+    translateInvocation(
+      invocation,
+      sensitiveOptions,
+      unknownFlagPolicy
+    ) as CliInvocationResult<Definition>;
   const cli: Cli<Definition> = Object.freeze({
     name: program.name,
     parse(parseInput?: CliParseInput): CliInvocationResult<Definition> {
       const settings = readParseInput(parseInput);
+      const unknownFlagPolicy = settings.unknownFlagPolicy ?? 'error';
       return translate(invocationParser.parse(program, {
         ...(settings.argv === undefined ? {} : { argv: settings.argv }),
-        unknownFlagPolicy: settings.unknownFlagPolicy ?? 'error'
-      }));
+        unknownFlagPolicy
+      }), unknownFlagPolicy);
     },
     invoke(structuredInput: CliStructuredInvocationInput<Definition>): CliInvocationResult<Definition> {
       const coreInput: CoreStructuredInvocationInput = structuredInput;
@@ -814,12 +823,13 @@ type TranslatedInvocation = CoreInvocationResult extends infer Invocation
 
 function translateInvocation(
   invocation: CoreInvocationResult,
-  sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>
+  sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>,
+  unknownFlagPolicy: 'error' | 'collect'
 ): TranslatedInvocation {
   const commandSensitiveOptions = invocation.command === undefined
     ? undefined
     : sensitiveOptions.get(invocation.command.key);
-  const diagnostics = Object.freeze(invocation.diagnostics.map((diagnostic) => {
+  const diagnostics: CliDiagnostic[] = invocation.diagnostics.map((diagnostic) => {
     if (diagnostic.source !== 'option') return diagnostic;
     const option = typeof diagnostic.details['option'] === 'string'
       ? diagnostic.details['option']
@@ -834,6 +844,32 @@ function translateInvocation(
         ? { sensitive: true as const }
         : {})
     }) as CliOptionDiagnostic;
-  }));
-  return Object.freeze({ ...invocation, diagnostics });
+  });
+  if (unknownFlagPolicy === 'error') {
+    for (const flag of invocation.unknownFlags) {
+      const alreadyReported = diagnostics.some((diagnostic) =>
+        diagnostic.code === 'CLI_UNKNOWN_FLAG' &&
+        'argvIndex' in diagnostic && diagnostic.argvIndex === flag.argvIndex &&
+        'flag' in diagnostic && diagnostic.flag === flag.flag);
+      if (!alreadyReported) diagnostics.push(unknownFlagDiagnostic(flag));
+    }
+  }
+  return Object.freeze({ ...invocation, diagnostics: Object.freeze(diagnostics) });
+}
+
+function unknownFlagDiagnostic(
+  flag: CoreInvocationResult['unknownFlags'][number]
+): CliCoreDiagnostic {
+  return Object.freeze({
+    source: 'invocation',
+    code: 'CLI_UNKNOWN_FLAG',
+    severity: 'error',
+    message: `Unknown flag: ${flag.flag}.`,
+    flag: flag.flag,
+    argvElement: flag.argvElement,
+    argvIndex: flag.argvIndex,
+    ...(flag.offset === undefined ? {} : { offset: flag.offset }),
+    ...(flag.inlineValue === undefined ? {} : { inlineValue: flag.inlineValue }),
+    ...(flag.suggestions === undefined ? {} : { suggestions: flag.suggestions })
+  });
 }
