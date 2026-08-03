@@ -22,7 +22,7 @@
   "scripts": {
     "clean": "node --eval \"import('node:fs/promises').then(({ rm }) => rm('dist', { recursive: true, force: true }))\"",
     "build": "npm run clean && tsc -p tsconfig.json && node scripts/finalize-build.mjs",
-    "prepack": "npm run build",
+    "prepare": "npm run build",
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
     "test": "npm run build && node --test tests/cli.test.mjs tests/main.test.mjs tests/shells.test.mjs",
