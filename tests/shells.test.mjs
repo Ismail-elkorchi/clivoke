@@ -21,8 +21,7 @@ for (const { shell, command, args } of [
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      '$null = [scriptblock]::Create($args[0])',
-      script
+      `$null = [scriptblock]::Create('${powerShellLiteral(script)}')`
     ]
   }
 ]) {
