@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1 - 2026-08-09
+
+- Added grammar-aware `-h`/`--help` and configured `--version` parse actions.
+- Added a safe terminal help formatter and automatic help/version handling in
+  `runCliMain()`.
+- Included the built-in actions in help and completion while keeping them out
+  of typed application option values.
+
 ## 0.1.0 - 2026-08-09
 
 - Added one typed command definition for parsing, validation, help, completion,

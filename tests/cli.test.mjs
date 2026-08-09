@@ -6,6 +6,7 @@ import {
   createCli,
   createCliHelp,
   createCompletionScript,
+  formatCliHelp,
   value
 } from '../dist/index.js';
 
@@ -181,6 +182,61 @@ test('help and completion retain defaults, choices, false flags, and value conte
   );
   assert.doesNotMatch(createCompletionScript(cli, 'bash'), /__complete/u);
   assert.match(createCompletionScript(cli, 'bash'), /ship-complete/u);
+});
+
+test('help and version are grammar-aware parse actions', () => {
+  const releaseCli = createCli({
+    name: 'ship',
+    version: '1.2.3',
+    invokable: false,
+    commands: [{
+      name: 'deploy',
+      options: {
+        input: { type: 'string', flags: ['--input'], required: true }
+      }
+    }]
+  });
+
+  assert.deepEqual(releaseCli.parse({ argv: ['--help'] }), {
+    status: 'help',
+    commandPath: []
+  });
+  assert.deepEqual(releaseCli.parse({ argv: ['deploy', '-h'] }), {
+    status: 'help',
+    commandPath: ['deploy']
+  });
+  assert.deepEqual(releaseCli.parse({ argv: ['--version'] }), {
+    status: 'version',
+    version: '1.2.3'
+  });
+
+  const valueNamedHelp = releaseCli.parse({ argv: ['deploy', '--input', '--help'] });
+  assert.equal(valueNamedHelp.status, 'ready');
+  assert.equal(valueNamedHelp.optionValues.input, '--help');
+  assert.equal(releaseCli.parse({ argv: ['deploy', '--', '--help'] }).status, 'invalid');
+  assert.equal(releaseCli.parse({ argv: ['deploy', '--help=value'] }).status, 'invalid');
+
+  const help = createCliHelp(releaseCli, ['deploy']);
+  assert.ok(help);
+  assert.deepEqual(help.options.map((option) => option.name), ['help', 'version', 'input']);
+  assert.match(formatCliHelp(help), /^Usage: ship deploy \[options\]$/mu);
+  assert.match(formatCliHelp(help), /-h, --help {2}Show help\./u);
+  assert.match(formatCliHelp(help), /--version {2}Show the version\./u);
+});
+
+test('built-in action names and flags cannot be redefined', () => {
+  for (const options of [
+    { help: { type: 'boolean', flags: ['--other'] } },
+    { custom: { type: 'boolean', flags: ['--help'] } },
+    { version: { type: 'boolean', flags: ['--other'] } },
+    { custom: { type: 'boolean', flags: ['--version'] } }
+  ]) {
+    assert.throws(
+      () => createCli({ name: 'ship', options }),
+      (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+        issue.source === 'clivoke' && issue.code === 'INVALID_DEFINITION')
+    );
+  }
 });
 
 test('special option names remain ordinary own properties', () => {

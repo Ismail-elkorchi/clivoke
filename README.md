@@ -21,6 +21,7 @@ import { createCli, value } from "clivoke";
 
 const cli = createCli({
   name: "ship",
+  version: "1.2.3",
   invokable: false,
   options: {
     verbose: {
@@ -56,12 +57,17 @@ if (result.status === "ready" && result.commandKey === "ship deploy") {
   console.log(result.passthroughArguments); // ["--watch"]
 } else if (result.status === "invalid") {
   console.error(result.diagnostics);
+} else if (result.status === "help") {
+  console.log(result.commandPath);
+} else {
+  console.log(result.version);
 }
 ```
 
 `createCli()` returns an immutable compiled CLI with a stable `name`, `parse()`,
 and `invoke()` API. Definitions and parse settings are closed in TypeScript and
-validated at runtime.
+validated at runtime. Every CLI recognizes `-h` and `--help`; defining `version`
+also enables `--version`.
 
 ## Commands and values
 
@@ -122,17 +128,21 @@ handler output through the supplied host and sets the exit code.
 ## Help and completion
 
 ```ts
-import { completeCliWords, createCliHelp } from "clivoke";
+import { completeCliWords, createCliHelp, formatCliHelp } from "clivoke";
 
 const help = createCliHelp(cli, ["deploy"]);
+if (help !== undefined) console.log(formatCliHelp(help));
 const candidates = await completeCliWords(cli, {
   words: ["ship", "deploy", "--region", "e"],
   cursor: 3,
 });
 ```
 
-Help includes aliases, false flags, defaults, repetition, multiplicity, finite
-choices, and positional metadata. Unknown command paths return `undefined`.
+Help includes the built-in help and version flags alongside aliases, false
+flags, defaults, repetition, multiplicity, finite choices, and positional
+metadata. Unknown command paths return `undefined`. `cli.parse()` reports help
+and version as distinct successful actions before required invocation values
+are enforced, while still respecting option values and `--`.
 
 Completion distinguishes command names, flags, option values, positional
 slots, and post-`--` input. Finite choices are suggested automatically.

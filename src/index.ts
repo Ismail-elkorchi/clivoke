@@ -22,7 +22,7 @@
 export { completeCliWords, createCompletionScript } from './completion.ts';
 export { createCli } from './definition.ts';
 export { CliDefinitionError } from './definition-error.ts';
-export { createCliHelp } from './help.ts';
+export { createCliHelp, formatCliHelp } from './help.ts';
 export {
   createDenoCliHost,
   createProcessCliHost,
@@ -54,10 +54,13 @@ export type {
   CliInvocationFailure,
   CliInvocationResult,
   CliInvocationSuccess,
+  CliHelpRequest,
   CliParseInput,
+  CliParseResult,
   CliPositionalDefinition,
   CliShell,
   CliStructuredInvocationInput,
+  CliVersionRequest,
   DenoLike,
   ProcessLike
 } from './public-types.ts';
