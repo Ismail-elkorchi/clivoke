@@ -1,6 +1,6 @@
 {
   "name": "clivoke",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Type-safe CLI toolkit for commands, parsing, help, completion, and execution.",
   "type": "module",
   "sideEffects": false,

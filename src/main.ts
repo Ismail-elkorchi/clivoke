@@ -1,5 +1,7 @@
 import { CliHandlerNotFoundError, dispatchCli } from '@ismail-elkorchi/cli-core';
 import { completeCliWords } from './completion.ts';
+import { createCliHelp, formatCliHelp } from './help.ts';
+import { sanitizeTerminalText } from './terminal.ts';
 import type {
   CliCompletionMainInput,
   CliDiagnostic,
@@ -52,6 +54,18 @@ export async function runCliMain<Definition extends CliDefinition, Context>(
 ): Promise<number> {
   const argv = input.argv ?? input.host.argv;
   const invocation = input.cli.parse({ argv });
+  if (invocation.status === 'help') {
+    const help = createCliHelp(input.cli, invocation.commandPath);
+    if (help === undefined) throw new TypeError('Help action selected an unknown command.');
+    await writeIfPresent(input.host.writeStdout, formatCliHelp(help));
+    input.host.setExitCode(0);
+    return 0;
+  }
+  if (invocation.status === 'version') {
+    await writeIfPresent(input.host.writeStdout, `${input.cli.name} ${invocation.version}`);
+    input.host.setExitCode(0);
+    return 0;
+  }
   if (invocation.status === 'invalid') {
     const format = input.formatDiagnostics ?? formatCliDiagnostics;
     await writeIfPresent(input.host.writeStderr, format(invocation.diagnostics));
@@ -108,15 +122,6 @@ export function formatCliDiagnostics(diagnostics: readonly CliDiagnostic[]): str
     return `${sanitizeTerminalText(diagnostic.code)}: ${sanitizeTerminalText(message)}${
       context.length === 0 ? '' : ` [${context.join(' ')}]`}`;
   }).join('\n');
-}
-
-function sanitizeTerminalText(value: string): string {
-  return [...value].map((character) => {
-    const codePoint = character.codePointAt(0) ?? 0;
-    return /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(character)
-      ? `\\u{${codePoint.toString(16).padStart(4, '0')}}`
-      : character;
-  }).join('');
 }
 
 function isLineSafe(value: string): boolean {

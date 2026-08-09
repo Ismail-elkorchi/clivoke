@@ -28,14 +28,17 @@ import type {
   CliDefinition,
   CliDiagnostic,
   CliDefinitionIssue,
+  CliHelpRequest,
   CliInvocationResult,
   CliMultipleOptionDefinition,
   CliOptionDiagnostic,
   CliOptionDefinitions,
   CliParseInput,
+  CliParseResult,
   CliPositionalDefinition,
   CliScalarOptionDefinition,
-  CliStructuredInvocationInput
+  CliStructuredInvocationInput,
+  CliVersionRequest
 } from './public-types.ts';
 
 type OptionShape<Definition> = Definition extends { readonly type: 'boolean' }
@@ -137,11 +140,11 @@ export function createCli<const Definition extends CliDefinition>(
 ): Cli<Definition> {
   const snapshot = snapshotDefinition(input);
   const issues = [...snapshot.issues];
-  let program: CliProgram | undefined;
+  let structuredProgram: CliProgram | undefined;
 
   if (snapshot.definition !== undefined) {
     try {
-      program = defineCoreCli(toCoreDefinition(snapshot.definition));
+      structuredProgram = defineCoreCli(toCoreDefinition(snapshot.definition, false));
     } catch (error) {
       if (!(error instanceof CoreDefinitionError)) throw error;
       issues.push(...error.issues.map((issue) => Object.freeze({
@@ -164,9 +167,13 @@ export function createCli<const Definition extends CliDefinition>(
     }
   }
 
-  if (issues.length > 0 || program === undefined || snapshot.definition === undefined) {
+  if (issues.length > 0 || structuredProgram === undefined || snapshot.definition === undefined) {
     throw new CliDefinitionError(issues);
   }
+
+  const definition = snapshot.definition;
+  const program = defineCoreCli(toCoreDefinition(definition, true));
+  const controlNames = new Set(Object.keys(controlOptions(definition.version)));
 
   const optionParsers = new Map<string, RuntimeParser>();
   const sensitiveOptions = new Map<string, ReadonlySet<string>>();
@@ -182,21 +189,31 @@ export function createCli<const Definition extends CliDefinition>(
     translateInvocation(
       invocation,
       sensitiveOptions,
-      unknownFlagPolicy
+      unknownFlagPolicy,
+      controlNames
     ) as CliInvocationResult<Definition>;
   const cli: Cli<Definition> = Object.freeze({
     name: program.name,
-    parse(parseInput?: CliParseInput): CliInvocationResult<Definition> {
+    parse(parseInput?: CliParseInput): CliParseResult<Definition> {
       const settings = readParseInput(parseInput);
       const unknownFlagPolicy = settings.unknownFlagPolicy ?? 'error';
-      return translate(invocationParser.parse(program, {
-        ...(settings.argv === undefined ? {} : { argv: settings.argv }),
+      const argv = settings.argv ?? Object.freeze([]);
+      const invocation = invocationParser.parse(program, {
+        argv,
         unknownFlagPolicy
-      }), unknownFlagPolicy);
+      });
+      const action = findControlAction(
+        optionParsers,
+        invocation.command?.key ?? program.name,
+        invocation.command?.path ?? Object.freeze([]),
+        argv,
+        definition.version
+      );
+      return action ?? translate(invocation, unknownFlagPolicy);
     },
     invoke(structuredInput: CliStructuredInvocationInput<Definition>): CliInvocationResult<Definition> {
       const coreInput: CoreStructuredInvocationInput = structuredInput;
-      return translate(createCoreInvocation(program, coreInput));
+      return translate(createCoreInvocation(structuredProgram, coreInput));
     }
   });
   runtimes.set(cli, Object.freeze({ program, invocationParser, optionParsers }));
@@ -212,6 +229,7 @@ export function runtimeFor(cli: object): CliRuntime {
 
 const definitionProperties = new Set([
   'name',
+  'version',
   'description',
   'options',
   'positionals',
@@ -277,6 +295,13 @@ function snapshotCommandContainer(
   const dynamicOutput: Record<PropertyKey, unknown> = output;
   const allowed = root ? definitionProperties : commandProperties;
   copyKnownDataProperties(input, dynamicOutput, allowed, path, issues);
+
+  if (root && dynamicOutput['version'] !== undefined && (
+    typeof dynamicOutput['version'] !== 'string' || dynamicOutput['version'].length === 0
+  )) {
+    addInvalidIssue(issues, ['version'], 'Version must be a non-empty string.');
+    delete dynamicOutput['version'];
+  }
 
   const options = dynamicOutput['options'];
   if (options !== undefined) {
@@ -352,6 +377,14 @@ function snapshotOptions(
       addInvalidIssue(issues, path, 'Option names must be strings.');
       continue;
     }
+    if (property === 'help' || property === 'version') {
+      addInvalidIssue(
+        issues,
+        [...path, property],
+        `Option name ${property} is reserved for Clivoke's built-in CLI actions.`
+      );
+      continue;
+    }
     const descriptor = Object.getOwnPropertyDescriptor(input, property);
     if (descriptor === undefined || !('value' in descriptor)) {
       addInvalidIssue(issues, [...path, property], 'Option definitions must be data properties.');
@@ -362,7 +395,23 @@ function snapshotOptions(
       continue;
     }
     const option = snapshotOption(descriptor.value, [...path, property], issues);
-    if (option !== undefined) options[property] = option;
+    if (option !== undefined) {
+      const flags = readStringArray(option.flags) ?? [];
+      const falseFlags = option.type === 'boolean'
+        ? readStringArray(option.falseFlags) ?? []
+        : [];
+      const reservedFlag = [...flags, ...falseFlags].find((flag) =>
+        flag === '-h' || flag === '--help' || flag === '--version');
+      if (reservedFlag !== undefined) {
+        addInvalidIssue(
+          issues,
+          [...path, property],
+          `Flag ${reservedFlag} is reserved for Clivoke's built-in CLI actions.`
+        );
+        continue;
+      }
+      options[property] = option;
+    }
   }
   return Object.freeze(options);
 }
@@ -579,11 +628,16 @@ function readParseInput(input: unknown): CliParseInput {
   return Object.freeze(output);
 }
 
-function toCoreDefinition(definition: CliDefinition): CoreDefinition {
+function toCoreDefinition(
+  definition: CliDefinition,
+  includeControls: boolean
+): CoreDefinition {
   return {
     name: definition.name,
     ...(definition.description === undefined ? {} : { description: definition.description }),
-    options: optionPresentations(definition.options ?? {}),
+    options: optionPresentations(includeControls
+      ? mergeOptionMaps(definition.options ?? {}, controlOptions(definition.version))
+      : definition.options ?? {}),
     ...(definition.positionals === undefined ? {} : { positionals: definition.positionals }),
     commands: (definition.commands ?? []).map(toCoreCommand),
     ...(definition.invokable === undefined ? {} : { invokable: definition.invokable }),
@@ -759,7 +813,10 @@ function collectDeclaredScopes(
 }
 
 function effectiveOptionScopes(definition: CliDefinition): readonly OptionScope[] {
-  const globalOptions = definition.options ?? Object.freeze({});
+  const globalOptions = mergeOptionMaps(
+    definition.options ?? Object.freeze({}),
+    controlOptions(definition.version)
+  );
   const scopes: OptionScope[] = [{
     key: definition.name,
     path: Object.freeze([]),
@@ -805,6 +862,44 @@ function sensitiveOptionNames(options: CliOptionDefinitions): ReadonlySet<string
     .map(([name]) => name));
 }
 
+function controlOptions(version: string | undefined): CliOptionDefinitions {
+  const options = Object.create(null) as Record<string, CliOptionDefinitions[string]>;
+  options['help'] = Object.freeze({
+    type: 'boolean',
+    flags: ['-h', '--help'] as const,
+    description: 'Show help.'
+  });
+  if (version !== undefined) {
+    options['version'] = Object.freeze({
+      type: 'boolean',
+      flags: ['--version'] as const,
+      description: 'Show the version.'
+    });
+  }
+  return Object.freeze(options);
+}
+
+function findControlAction(
+  parsers: ReadonlyMap<string, RuntimeParser>,
+  commandKey: string,
+  commandPath: readonly string[],
+  argv: readonly string[],
+  version: string | undefined
+): CliHelpRequest | CliVersionRequest | undefined {
+  const parser = parsers.get(commandKey);
+  if (parser === undefined) throw new TypeError(`Missing option parser for command ${commandKey}.`);
+  const scan = parser.scan({ argv, flagPlacement: 'interspersed' });
+  const control = scan.options.find((option) =>
+    option.state === 'boolean' && (option.option === 'help' || option.option === 'version'));
+  if (control?.option === 'help') {
+    return Object.freeze({ status: 'help', commandPath: Object.freeze([...commandPath]) });
+  }
+  if (control?.option === 'version' && version !== undefined) {
+    return Object.freeze({ status: 'version', version });
+  }
+  return undefined;
+}
+
 function formatDefault(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
@@ -824,7 +919,8 @@ type TranslatedInvocation = CoreInvocationResult extends infer Invocation
 function translateInvocation(
   invocation: CoreInvocationResult,
   sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>,
-  unknownFlagPolicy: 'error' | 'collect'
+  unknownFlagPolicy: 'error' | 'collect',
+  controlNames: ReadonlySet<string>
 ): TranslatedInvocation {
   const commandSensitiveOptions = invocation.command === undefined
     ? undefined
@@ -854,7 +950,26 @@ function translateInvocation(
       if (!alreadyReported) diagnostics.push(unknownFlagDiagnostic(flag));
     }
   }
+  if (invocation.status === 'ready') {
+    return Object.freeze({
+      ...invocation,
+      optionValues: withoutControlProperties(invocation.optionValues, controlNames),
+      specifiedOptions: withoutControlProperties(invocation.specifiedOptions, controlNames),
+      diagnostics: Object.freeze(diagnostics)
+    });
+  }
   return Object.freeze({ ...invocation, diagnostics: Object.freeze(diagnostics) });
+}
+
+function withoutControlProperties<Value>(
+  input: Readonly<Record<string, Value>>,
+  controlNames: ReadonlySet<string>
+): Readonly<Record<string, Value>> {
+  const output = Object.create(null) as Record<string, Value>;
+  for (const [name, value] of Object.entries(input)) {
+    if (!controlNames.has(name)) output[name] = value;
+  }
+  return Object.freeze(output);
 }
 
 function unknownFlagDiagnostic(

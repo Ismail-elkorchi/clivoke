@@ -131,6 +131,8 @@ export interface CliCommandDefinition {
 /** A complete typed CLI definition. */
 export interface CliDefinition {
   readonly name: string;
+  /** Version printed when argv selects the built-in `--version` action. */
+  readonly version?: string;
   readonly description?: string;
   readonly options?: CliOptionDefinitions;
   readonly positionals?: readonly CliPositionalDefinition[];
@@ -299,6 +301,24 @@ export type CliInvocationResult<Definition extends CliDefinition> =
   | CliInvocationSuccess<Definition>
   | CliInvocationFailure;
 
+/** A request to render help for the command selected by argv. */
+export interface CliHelpRequest {
+  readonly status: 'help';
+  readonly commandPath: readonly string[];
+}
+
+/** A request to print the configured program version. */
+export interface CliVersionRequest {
+  readonly status: 'version';
+  readonly version: string;
+}
+
+/** Result of classifying and parsing argv, including built-in CLI actions. */
+export type CliParseResult<Definition extends CliDefinition> =
+  | CliInvocationResult<Definition>
+  | CliHelpRequest
+  | CliVersionRequest;
+
 /** One option diagnostic retaining argv-flags' discriminated fields. */
 type CliParseIssue = Exclude<ParseIssue, { readonly code: 'UNKNOWN_FLAG' }>;
 
@@ -386,7 +406,7 @@ export interface Cli<Definition extends CliDefinition = CliDefinition> {
   readonly name: Definition['name'];
   readonly parse: <const Input extends CliParseInput = CliParseInput>(
     input?: Input & Record<Exclude<keyof Input, keyof CliParseInput>, never>
-  ) => CliInvocationResult<Definition>;
+  ) => CliParseResult<Definition>;
   readonly invoke: <const Input extends CliStructuredInvocationInput<Definition>>(
     input: ExactStructuredInvocationInput<Definition, Input>
   ) => CliInvocationResult<Definition>;

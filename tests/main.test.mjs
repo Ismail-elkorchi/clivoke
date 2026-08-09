@@ -31,6 +31,37 @@ test('runCliMain applies handler output through an explicit host', async () => {
   assert.deepEqual(writes, { stdout: 'ready\n', stderr: '', exitCode: 0 });
 });
 
+test('runCliMain renders built-in help and version actions', async () => {
+  const releaseCli = createCli({
+    name: 'ship',
+    version: '1.2.3',
+    invokable: false,
+    commands: [{ name: 'status' }]
+  });
+  for (const [argv, expected] of [
+    [['--help'], /^Usage: ship \[options\] <command>/u],
+    [['status', '--help'], /^Usage: ship status \[options\]/u],
+    [['--version'], /^ship 1\.2\.3\n$/u]
+  ]) {
+    const writes = { stdout: '', stderr: '', exitCode: undefined };
+    const host = {
+      argv,
+      writeStdout(text) { writes.stdout += text; },
+      writeStderr(text) { writes.stderr += text; },
+      setExitCode(exitCode) { writes.exitCode = exitCode; }
+    };
+    assert.equal(await runCliMain({
+      cli: releaseCli,
+      host,
+      handlers: { 'ship status': () => undefined },
+      context: undefined
+    }), 0);
+    assert.match(writes.stdout, expected);
+    assert.equal(writes.stderr, '');
+    assert.equal(writes.exitCode, 0);
+  }
+});
+
 test('runCliMain reports parse and handler failures without terminating the process', async () => {
   const writes = [];
   const host = {
@@ -213,7 +244,8 @@ test('completion JSON lines preserve candidate metadata and embedded newlines', 
       return ['line\nbreak'];
     }
   }), 0);
-  assert.deepEqual(JSON.parse(writes.stdout), {
+  const candidates = writes.stdout.trimEnd().split('\n').map((line) => JSON.parse(line));
+  assert.deepEqual(candidates.find((candidate) => candidate.kind === 'positional-value'), {
     kind: 'positional-value',
     value: 'line\nbreak',
     positional: 'target'
