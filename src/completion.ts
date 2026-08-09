@@ -157,7 +157,7 @@ function findActiveValue(
 export function createCompletionScript<Definition extends CliDefinition>(
   cli: Cli<Definition>,
   shell: CliShell,
-  completionExecutable = `${cli.name}-complete`
+  completionExecutable: string = `${cli.name}-complete`
 ): string {
   if (shell !== 'bash' && shell !== 'zsh' && shell !== 'fish' && shell !== 'pwsh') {
     throw new TypeError('Completion shell must be bash, zsh, fish, or pwsh.');
