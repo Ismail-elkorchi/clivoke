@@ -23,6 +23,10 @@ const cli = createCli({
   name: "ship",
   version: "1.2.3",
   invokable: false,
+  examples: [{
+    usage: "ship deploy api --region eu",
+    description: "Deploy the API service in Europe.",
+  }],
   options: {
     verbose: {
       type: "boolean",
@@ -66,8 +70,9 @@ if (result.status === "ready" && result.commandKey === "ship deploy") {
 
 `createCli()` returns an immutable compiled CLI with a stable `name`, `parse()`,
 and `invoke()` API. Definitions and parse settings are closed in TypeScript and
-validated at runtime. Every CLI recognizes `-h` and `--help`; defining `version`
-also enables `--version`.
+validated at runtime. Every CLI recognizes `-h`, `--help`, `help`, and
+`help <command>`; defining `version` also enables `--version`. A non-invokable
+root shows help when invoked without arguments.
 
 ## Commands and values
 
@@ -138,9 +143,10 @@ const candidates = await completeCliWords(cli, {
 });
 ```
 
-Help includes the built-in help and version flags alongside aliases, false
-flags, defaults, repetition, multiplicity, finite choices, and positional
-metadata. Unknown command paths return `undefined`. `cli.parse()` reports help
+Help includes examples and the built-in help and version flags alongside
+aliases, required markers, false flags, defaults, repetition, multiplicity,
+finite choices, and positional metadata. Unknown command paths return
+`undefined`. `cli.parse()` reports help
 and version as distinct successful actions before required invocation values
 are enforced, while still respecting option values and `--`.
 
@@ -148,6 +154,13 @@ Completion distinguishes command names, flags, option values, positional
 slots, and post-`--` input. Finite choices are suggested automatically.
 Asynchronous value providers receive the command path and an immutable partial
 invocation, enabling context-aware option, positional, and passthrough values.
+
+Use `inspectCliArgv(cli, argv)` when application policy must detect a flag on
+help, version, or invalid invocations. It returns the command path, recognized
+option occurrences, positional and passthrough arguments, and unknown flags
+without decoding values or creating a partial successful invocation. Because
+it uses the configured grammar, an argv element such as `--json` is not
+misclassified when it is the value of another option.
 
 `createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
 dedicated companion executable, named `<program>-complete` by default.

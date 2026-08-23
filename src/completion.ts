@@ -6,6 +6,7 @@ import {
 } from '@ismail-elkorchi/cli-core';
 import type { ScannedOption } from 'argv-flags';
 import { runtimeFor } from './definition.ts';
+import { inspectCliArgv } from './inspection.ts';
 import type {
   Cli,
   CliCompletion,
@@ -32,29 +33,22 @@ export async function completeCliWords<
   const request = readCompletionRequest(input);
   const normalized = normalizeRequest(cli, request);
   const runtime = runtimeFor(cli);
-  const route = runtime.invocationParser.route(runtime.program, { argv: normalized.argv });
-  const command = route.command;
-  const parser = runtime.optionParsers.get(command.key);
-  if (parser === undefined) throw new TypeError(`Missing option parser for command ${command.key}.`);
-  const scan = parser.scan({ argv: normalized.argv, flagPlacement: 'interspersed' });
+  const inspection = inspectCliArgv(cli, normalized.argv);
+  const command = findCliCommand(runtime.program, inspection.commandPath);
+  if (command === undefined) throw new TypeError('Inspection selected an unknown command.');
   const currentIndex = normalized.argv.length - 1;
-  const commandIndexes = route.status === 'routed'
-    ? route.commandIndexes
-    : scan.arguments.slice(0, command.path.length).map((argument) => argument.argvIndex);
-  const commandIndexSet = new Set(commandIndexes);
   const partialInvocation: CliCompletionPartialInvocation = Object.freeze({
     commandPath: command.path,
     words: normalized.words,
     cursor: normalized.cursor,
     argv: normalized.argv,
-    options: scan.options,
-    positionalArguments: Object.freeze(scan.arguments.filter((argument) =>
-      !commandIndexSet.has(argument.argvIndex))),
-    passthroughArguments: scan.afterDoubleDash,
-    unknownFlags: scan.unknownFlags
+    options: inspection.options,
+    positionalArguments: inspection.positionalArguments,
+    passthroughArguments: inspection.passthroughArguments,
+    unknownFlags: inspection.unknownFlags
   });
 
-  if (scan.doubleDashIndex !== undefined && scan.doubleDashIndex < currentIndex) {
+  if (inspection.doubleDashIndex !== undefined && inspection.doubleDashIndex < currentIndex) {
     if (!command.acceptsPassthroughArguments || request.provideValues === undefined) {
       return Object.freeze([]);
     }
@@ -68,7 +62,7 @@ export async function completeCliWords<
       Object.freeze({ kind: 'passthrough-value' as const, value })));
   }
 
-  const activeValue = findActiveValue(scan.options, currentIndex);
+  const activeValue = findActiveValue(inspection.options, currentIndex);
   if (activeValue !== undefined) {
     const attachedPrefix = activeValue.inline
       ? normalized.current.slice(0, normalized.current.length - activeValue.rawValue.length)
@@ -96,7 +90,7 @@ export async function completeCliWords<
 
   const specifiedOptions = Object.create(null) as Record<string, boolean>;
   for (const option of command.options) specifiedOptions[option.name] = false;
-  for (const option of scan.options) specifiedOptions[option.option] = true;
+  for (const option of inspection.options) specifiedOptions[option.option] = true;
   const coreCandidates = completeCli(runtime.program, {
     commandPath: command.path,
     prefix: normalized.current,
@@ -106,8 +100,7 @@ export async function completeCliWords<
   const positional = activePositional(
     command.path,
     runtime.program,
-    scan.arguments,
-    commandIndexes,
+    inspection.positionalArguments,
     currentIndex
   );
   if (positional === undefined || request.provideValues === undefined) {
@@ -287,14 +280,12 @@ function activePositional(
   commandPath: readonly string[],
   program: CliProgram,
   arguments_: readonly { readonly value: string; readonly argvIndex: number }[],
-  commandIndexes: readonly number[],
   currentIndex: number
 ): string | undefined {
   const command = findCliCommand(program, commandPath);
   if (command === undefined || command.positionals.length === 0) return undefined;
-  const commandIndexSet = new Set(commandIndexes);
   const completedCount = arguments_.filter((argument) =>
-    !commandIndexSet.has(argument.argvIndex) && argument.argvIndex < currentIndex).length;
+    argument.argvIndex < currentIndex).length;
   const positional = command.positionals[completedCount] ?? command.positionals.at(-1);
   return positional?.variadic === true || completedCount < command.positionals.length
     ? positional?.name

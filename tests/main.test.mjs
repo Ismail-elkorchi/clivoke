@@ -39,7 +39,9 @@ test('runCliMain renders built-in help and version actions', async () => {
     commands: [{ name: 'status' }]
   });
   for (const [argv, expected] of [
+    [[], /^Usage: ship \[options\] <command>/u],
     [['--help'], /^Usage: ship \[options\] <command>/u],
+    [['help', 'status'], /^Usage: ship status \[options\]/u],
     [['status', '--help'], /^Usage: ship status \[options\]/u],
     [['--version'], /^ship 1\.2\.3\n$/u]
   ]) {

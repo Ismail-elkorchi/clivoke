@@ -43,11 +43,30 @@ export function formatCliHelp(help: CliHelp): string {
           : '';
       lines.push(formatEntry(
         `${[...option.flags, ...option.falseFlags].join(', ')}${value}`,
-        option.description
+        formatOptionDescription(option)
       ));
     }
   }
+  if (help.examples.length > 0) {
+    lines.push('', 'Examples:');
+    for (const example of help.examples) {
+      lines.push(formatEntry(example.usage, example.description));
+    }
+  }
   return lines.join('\n');
+}
+
+function formatOptionDescription(option: CliHelp['options'][number]): string | undefined {
+  const facts = [
+    option.required ? 'required' : undefined,
+    option.defaultLabel === undefined ? undefined : `default: ${option.defaultLabel}`,
+    option.valueCandidates.length === 0
+      ? undefined
+      : `choices: ${option.valueCandidates.join(', ')}`
+  ].filter((fact): fact is string => fact !== undefined);
+  const suffix = facts.length === 0 ? undefined : `[${facts.join('; ')}]`;
+  return [option.description, suffix].filter((part): part is string => part !== undefined).join(' ') ||
+    undefined;
 }
 
 function formatEntry(label: string, description: string | undefined): string {

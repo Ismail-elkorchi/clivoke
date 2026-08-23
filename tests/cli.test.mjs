@@ -7,11 +7,13 @@ import {
   createCliHelp,
   createCompletionScript,
   formatCliHelp,
+  inspectCliArgv,
   value
 } from '../dist/index.js';
 
 const cli = createCli({
   name: 'ship',
+  examples: [{ usage: 'ship project deploy api --region eu' }],
   options: {
     verbose: {
       type: 'boolean',
@@ -31,6 +33,10 @@ const cli = createCli({
       aliases: [{ name: 'd', deprecated: 'Use deploy.' }],
       deprecated: 'Use release.',
       description: 'Deploy a service.',
+      examples: [{
+        usage: 'ship project deploy api --region us',
+        description: 'Deploy the API in the US region.'
+      }],
       options: {
         region: {
           type: value.choice(['eu', 'us']),
@@ -154,6 +160,14 @@ test('help and completion retain defaults, choices, false flags, and value conte
   assert.deepEqual(verbose?.falseFlags, ['--no-verbose']);
   assert.equal(verbose?.defaultLabel, 'false');
   assert.deepEqual(region?.valueCandidates, ['eu', 'us']);
+  assert.deepEqual(help.examples, [{
+    usage: 'ship project deploy api --region us',
+    description: 'Deploy the API in the US region.'
+  }]);
+  const formatted = formatCliHelp(help);
+  assert.match(formatted, /\[required; choices: eu, us\]/u);
+  assert.match(formatted, /\[default: false\]/u);
+  assert.match(formatted, /Examples:\n {2}ship project deploy api --region us/u);
   assert.equal(createCliHelp(cli, ['missing']), undefined);
 
   assert.deepEqual(
@@ -205,6 +219,22 @@ test('help and version are grammar-aware parse actions', () => {
     status: 'help',
     commandPath: ['deploy']
   });
+  assert.deepEqual(releaseCli.parse({ argv: [] }), {
+    status: 'help',
+    commandPath: []
+  });
+  assert.deepEqual(releaseCli.parse({ argv: ['help'] }), {
+    status: 'help',
+    commandPath: []
+  });
+  assert.deepEqual(releaseCli.parse({ argv: ['help', 'deploy'] }), {
+    status: 'help',
+    commandPath: ['deploy']
+  });
+  const unknownHelp = releaseCli.parse({ argv: ['help', 'missing'] });
+  assert.equal(unknownHelp.status, 'invalid');
+  assert.equal(unknownHelp.diagnostics[0]?.code, 'CLI_UNKNOWN_COMMAND');
+  assert.equal(unknownHelp.diagnostics[0]?.token, 'missing');
   assert.deepEqual(releaseCli.parse({ argv: ['--version'] }), {
     status: 'version',
     version: '1.2.3'
@@ -224,6 +254,44 @@ test('help and version are grammar-aware parse actions', () => {
   assert.match(formatCliHelp(help), /--version {2}Show the version\./u);
 });
 
+test('argv inspection identifies control flags through the actual grammar', () => {
+  const outputCli = createCli({
+    name: 'agent',
+    invokable: false,
+    options: {
+      json: { type: 'boolean', flags: ['--json'] }
+    },
+    commands: [{
+      name: 'query',
+      options: {
+        term: { type: 'string', flags: ['--term'], required: true }
+      }
+    }]
+  });
+  const inspection = inspectCliArgv(outputCli, [
+    '--json', 'query', '--term', 'knowledge', '--unknown'
+  ]);
+  assert.equal(Object.isFrozen(inspection), true);
+  assert.equal(Object.isFrozen(inspection.argv), true);
+  assert.equal(Object.isFrozen(inspection.options), true);
+  assert.equal(Object.isFrozen(inspection.options[0]), true);
+  assert.deepEqual(inspection.commandPath, ['query']);
+  assert.deepEqual(inspection.options.map(({ option, rawValue }) => ({ option, rawValue })), [{
+    option: 'json',
+    rawValue: undefined
+  }, {
+    option: 'term',
+    rawValue: 'knowledge'
+  }]);
+  assert.deepEqual(inspection.unknownFlags.map(({ flag }) => flag), ['--unknown']);
+
+  const valueInspection = inspectCliArgv(outputCli, ['query', '--term', '--json']);
+  assert.deepEqual(valueInspection.options.map(({ option, rawValue }) => ({ option, rawValue })), [{
+    option: 'term',
+    rawValue: '--json'
+  }]);
+});
+
 test('built-in action names and flags cannot be redefined', () => {
   for (const options of [
     { help: { type: 'boolean', flags: ['--other'] } },
@@ -233,6 +301,17 @@ test('built-in action names and flags cannot be redefined', () => {
   ]) {
     assert.throws(
       () => createCli({ name: 'ship', options }),
+      (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
+        issue.source === 'clivoke' && issue.code === 'INVALID_DEFINITION')
+    );
+  }
+  for (const command of [
+    { name: 'help' },
+    { name: 'status', aliases: ['help'] },
+    { name: 'status', aliases: [{ name: 'help' }] }
+  ]) {
+    assert.throws(
+      () => createCli({ name: 'ship', commands: [command] }),
       (error) => error instanceof CliDefinitionError && error.issues.some((issue) =>
         issue.source === 'clivoke' && issue.code === 'INVALID_DEFINITION')
     );

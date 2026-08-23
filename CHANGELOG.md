@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 - 2026-08-23
+
+- Added `help`, `help <command>`, and no-argument help for non-invokable roots.
+- Added immutable, grammar-aware argv inspection without partial decoded
+  values, and made completion consume the same inspection path.
+- Added renderer-neutral examples and rendered examples, required options,
+  defaults, and finite choices in terminal help.
+- Upgraded to `@ismail-elkorchi/cli-core` 0.3.0.
+- Added dependency, workflow, CodeQL, and dependency-review gates and moved npm
+  and JSR publication to GitHub Releases with OIDC.
+
 ## 0.1.1 - 2026-08-09
 
 - Added grammar-aware `-h`/`--help` and configured `--version` parse actions.

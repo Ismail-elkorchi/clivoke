@@ -1,6 +1,7 @@
 import {
   completeCliWords,
   createCli,
+  inspectCliArgv,
   runCliMain,
   type CliDiagnostic,
   value
@@ -14,6 +15,7 @@ export type UnknownFlagOptionDiagnosticMustBeNever = ExpectNever<Extract<
 
 const cli = createCli({
   name: 'ship',
+  examples: [{ usage: 'ship deploy api --target eu' }],
   options: {
     verbose: { type: 'boolean', flags: ['-v'] },
     retries: { type: 'integer', flags: ['--retries'], default: 2 }
@@ -41,6 +43,9 @@ const cli = createCli({
 });
 
 const result = cli.parse({ argv: [] });
+const inspection = inspectCliArgv(cli, ['deploy', '--target', 'eu', 'api']);
+const inspectedPath: readonly string[] = inspection.commandPath;
+void inspectedPath;
 const cliName: 'ship' = cli.name;
 void cliName;
 // @ts-expect-error dependency compilation state is not part of the Clivoke API
@@ -102,6 +107,9 @@ void runCliMain({
 
 // @ts-expect-error root definitions are closed
 createCli({ name: 'ship', typo: true });
+
+// @ts-expect-error example definitions are closed
+createCli({ name: 'ship', examples: [{ usage: 'ship', typo: true }] });
 
 createCli({
   name: 'ship',
