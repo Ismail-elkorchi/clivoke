@@ -1,6 +1,6 @@
 {
   "name": "clivoke",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Type-safe CLI toolkit for commands, parsing, help, completion, and execution.",
   "type": "module",
   "sideEffects": false,
@@ -29,8 +29,10 @@
     "test:package": "node --test tests/packed-consumer.test.mjs",
     "test:source": "deno run --no-check --cached-only --node-modules-dir=manual --import-map=tests/runtime-import-map.json tests/runtime-smoke.ts && bun run tests/runtime-smoke.ts",
     "check:jsr": "deno publish --dry-run --allow-dirty",
+    "check:audit": "npm audit --audit-level=high",
+    "check:workflow-policy": "node scripts/workflow-policy-check.mjs",
     "release:gate": "node scripts/release-gate.mjs",
-    "check": "npm run lint && npm run typecheck && npm test && npm run test:package && npm run test:source && npm run check:jsr"
+    "check": "npm run check:workflow-policy && npm run check:audit && npm run lint && npm run typecheck && npm test && npm run test:package && npm run test:source && npm run check:jsr"
   },
   "repository": {
     "type": "git",
@@ -69,7 +71,7 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@ismail-elkorchi/cli-core": "^0.2.0",
+    "@ismail-elkorchi/cli-core": "^0.3.0",
     "argv-flags": "^3.0.0"
   },
   "devDependencies": {

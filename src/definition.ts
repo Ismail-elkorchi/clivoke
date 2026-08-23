@@ -8,6 +8,7 @@ import {
   type CliInvocationResult as CoreInvocationResult,
   type CliOptionDefinition as CoreOptionDefinition,
   type CliProgram,
+  findCliCommandChildren,
   type StructuredInvocationInput as CoreStructuredInvocationInput
 } from '@ismail-elkorchi/cli-core';
 import {
@@ -28,7 +29,9 @@ import type {
   CliDefinition,
   CliDiagnostic,
   CliDefinitionIssue,
+  CliExampleDefinition,
   CliHelpRequest,
+  CliInvocationFailure,
   CliInvocationResult,
   CliMultipleOptionDefinition,
   CliOptionDiagnostic,
@@ -82,6 +85,15 @@ type ExactPositionals<Positionals extends readonly unknown[]> = {
     : never;
 };
 
+type ExactExamples<Examples extends readonly unknown[]> = {
+  readonly [Index in keyof Examples]: Examples[Index] extends object
+    ? Examples[Index] & Record<
+        Exclude<keyof Examples[Index], keyof CliExampleDefinition>,
+        never
+      >
+    : never;
+};
+
 type ExactCommands<Commands extends readonly CliCommandDefinition[]> = {
   readonly [Index in keyof Commands]: Commands[Index] extends CliCommandDefinition
     ? ExactCommand<Commands[Index]>
@@ -94,6 +106,10 @@ type ExactCommand<Command extends CliCommandDefinition> = Command & Record<
 > & (Command extends { readonly options: infer Options }
   ? Options extends CliOptionDefinitions
     ? { readonly options: Options & ExactOptions<Options> }
+    : never
+  : object) & (Command extends { readonly examples: infer Examples }
+  ? Examples extends readonly unknown[]
+    ? { readonly examples: ExactExamples<Examples> }
     : never
   : object) & (Command extends { readonly aliases: infer Aliases }
   ? Aliases extends readonly unknown[]
@@ -115,6 +131,10 @@ type ExactDefinition<Definition extends CliDefinition> = Definition & Record<
 > & (Definition extends { readonly options: infer Options }
   ? Options extends CliOptionDefinitions
     ? { readonly options: Options & ExactOptions<Options> }
+    : never
+  : object) & (Definition extends { readonly examples: infer Examples }
+  ? Examples extends readonly unknown[]
+    ? { readonly examples: ExactExamples<Examples> }
     : never
   : object) & (Definition extends { readonly positionals: infer Positionals }
   ? Positionals extends readonly unknown[]
@@ -198,6 +218,11 @@ export function createCli<const Definition extends CliDefinition>(
       const settings = readParseInput(parseInput);
       const unknownFlagPolicy = settings.unknownFlagPolicy ?? 'error';
       const argv = settings.argv ?? Object.freeze([]);
+      const helpCommand = findHelpCommandAction(program, optionParsers, argv);
+      if (helpCommand !== undefined) return helpCommand;
+      if (argv.length === 0 && !program.root.invokable) {
+        return Object.freeze({ status: 'help', commandPath: Object.freeze([]) });
+      }
       const invocation = invocationParser.parse(program, {
         argv,
         unknownFlagPolicy
@@ -231,6 +256,7 @@ const definitionProperties = new Set([
   'name',
   'version',
   'description',
+  'examples',
   'options',
   'positionals',
   'commands',
@@ -242,6 +268,7 @@ const commandProperties = new Set([
   'aliases',
   'description',
   'deprecated',
+  'examples',
   'options',
   'positionals',
   'commands',
@@ -250,6 +277,7 @@ const commandProperties = new Set([
 ]);
 const aliasProperties = new Set(['name', 'deprecated']);
 const positionalProperties = new Set(['name', 'required', 'variadic', 'description']);
+const exampleProperties = new Set(['usage', 'description']);
 
 interface DefinitionSnapshot {
   readonly definition?: CliDefinition;
@@ -309,6 +337,18 @@ function snapshotCommandContainer(
     if (copied === undefined) delete dynamicOutput['options'];
     else dynamicOutput['options'] = copied;
   }
+  const examples = dynamicOutput['examples'];
+  if (examples !== undefined) {
+    const copied = snapshotObjectArray(
+      examples,
+      path,
+      'Examples',
+      exampleProperties,
+      issues
+    );
+    if (copied === undefined) delete dynamicOutput['examples'];
+    else dynamicOutput['examples'] = copied;
+  }
   const positionals = dynamicOutput['positionals'];
   if (positionals !== undefined) {
     const copied = snapshotObjectArray(
@@ -356,10 +396,24 @@ function snapshotCommands(
     }
     const name = ownDataValue(value, 'name');
     const path = Object.freeze([...parentPath, typeof name === 'string' ? name : '']);
+    if (parentPath.length === 0 && (name === 'help' || hasHelpAlias(value))) {
+      addInvalidIssue(
+        issues,
+        path,
+        'Top-level command names and aliases must not use reserved built-in name help.'
+      );
+    }
     const command = snapshotCommandContainer(value, path, false, ancestors, issues);
     if (command !== undefined) commands.push(command);
   }
   return Object.freeze(commands);
+}
+
+function hasHelpAlias(command: PlainRecord): boolean {
+  const aliases = readDenseArray(ownDataValue(command, 'aliases'));
+  return aliases?.some((alias) => alias === 'help' || (
+    isPlainRecord(alias) && ownDataValue(alias, 'name') === 'help'
+  )) ?? false;
 }
 
 function snapshotOptions(
@@ -635,6 +689,7 @@ function toCoreDefinition(
   return {
     name: definition.name,
     ...(definition.description === undefined ? {} : { description: definition.description }),
+    ...(definition.examples === undefined ? {} : { examples: definition.examples }),
     options: optionPresentations(includeControls
       ? mergeOptionMaps(definition.options ?? {}, controlOptions(definition.version))
       : definition.options ?? {}),
@@ -653,6 +708,7 @@ function toCoreCommand(definition: CliCommandDefinition): CoreCommandDefinition 
     ...(definition.aliases === undefined ? {} : { aliases: definition.aliases }),
     ...(definition.description === undefined ? {} : { description: definition.description }),
     ...(definition.deprecated === undefined ? {} : { deprecated: definition.deprecated }),
+    ...(definition.examples === undefined ? {} : { examples: definition.examples }),
     options: optionPresentations(definition.options ?? {}),
     ...(definition.positionals === undefined ? {} : { positionals: definition.positionals }),
     commands: (definition.commands ?? []).map(toCoreCommand),
@@ -898,6 +954,45 @@ function findControlAction(
     return Object.freeze({ status: 'version', version });
   }
   return undefined;
+}
+
+function findHelpCommandAction(
+  program: CliProgram,
+  parsers: ReadonlyMap<string, RuntimeParser>,
+  argv: readonly string[]
+): CliHelpRequest | CliInvocationFailure | undefined {
+  const parser = parsers.get(program.name);
+  if (parser === undefined) throw new TypeError(`Missing option parser for command ${program.name}.`);
+  const scan = parser.scan({ argv, flagPlacement: 'interspersed' });
+  if (scan.issues.length > 0 || scan.unknownFlags.length > 0 ||
+      scan.afterDoubleDash.length > 0 || scan.arguments[0]?.value !== 'help') {
+    return undefined;
+  }
+  let command = program.root;
+  for (const argument of scan.arguments.slice(1)) {
+    const child = findCliCommandChildren(program, command).find((candidate) =>
+      candidate.name === argument.value ||
+      candidate.aliases.some((alias) => alias.name === argument.value));
+    if (child === undefined) {
+      return Object.freeze({
+        status: 'invalid',
+        source: Object.freeze({ kind: 'argv', argv }),
+        command,
+        diagnostics: Object.freeze([Object.freeze({
+          source: 'command',
+          code: 'CLI_UNKNOWN_COMMAND',
+          severity: 'error',
+          message: `Unknown command: ${argument.value}.`,
+          token: argument.value,
+          argvIndex: argument.argvIndex,
+          commandPath: command.path
+        })]),
+        unknownFlags: Object.freeze([])
+      });
+    }
+    command = child;
+  }
+  return Object.freeze({ status: 'help', commandPath: command.path });
 }
 
 function formatDefault(value: unknown): string | undefined {

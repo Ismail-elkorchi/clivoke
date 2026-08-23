@@ -4,6 +4,7 @@ import type {
   CliCompletion as CoreCompletion,
   CliCoreDiagnostic,
   CliDefinitionIssue as CoreDefinitionIssue,
+  CliExampleDefinition as CoreExampleDefinition,
   CliHandlers,
   CliInvocation,
   CliInvocationFailure as CoreInvocationFailure
@@ -114,12 +115,16 @@ export interface CliPositionalDefinition {
   readonly description?: string;
 }
 
+/** One renderer-neutral example shown in command help. */
+export type CliExampleDefinition = CoreExampleDefinition;
+
 /** One command in the Clivoke definition tree. */
 export interface CliCommandDefinition {
   readonly name: string;
   readonly aliases?: readonly CliAliasInput[];
   readonly description?: string;
   readonly deprecated?: boolean | string;
+  readonly examples?: readonly CliExampleDefinition[];
   readonly options?: CliOptionDefinitions;
   readonly positionals?: readonly CliPositionalDefinition[];
   readonly commands?: readonly CliCommandDefinition[];
@@ -134,6 +139,7 @@ export interface CliDefinition {
   /** Version printed when argv selects the built-in `--version` action. */
   readonly version?: string;
   readonly description?: string;
+  readonly examples?: readonly CliExampleDefinition[];
   readonly options?: CliOptionDefinitions;
   readonly positionals?: readonly CliPositionalDefinition[];
   readonly commands?: readonly CliCommandDefinition[];
@@ -416,6 +422,17 @@ export interface Cli<Definition extends CliDefinition = CliDefinition> {
 export interface CliParseInput {
   readonly argv?: readonly string[];
   readonly unknownFlagPolicy?: 'error' | 'collect';
+}
+
+/** Grammar-aware classification of raw argv without decoding option values. */
+export interface CliArgvInspection {
+  readonly argv: readonly string[];
+  readonly commandPath: readonly string[];
+  readonly options: readonly ScannedOption[];
+  readonly positionalArguments: readonly ScannedArgument[];
+  readonly passthroughArguments: readonly ScannedArgument[];
+  readonly unknownFlags: readonly UnknownFlag[];
+  readonly doubleDashIndex?: number;
 }
 
 /** A shell supported by completion script generation. */

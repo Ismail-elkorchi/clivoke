@@ -23,6 +23,7 @@ export { completeCliWords, createCompletionScript } from './completion.ts';
 export { createCli } from './definition.ts';
 export { CliDefinitionError } from './definition-error.ts';
 export { createCliHelp, formatCliHelp } from './help.ts';
+export { inspectCliArgv } from './inspection.ts';
 export {
   createDenoCliHost,
   createProcessCliHost,
@@ -34,6 +35,7 @@ export { value } from 'argv-flags';
 
 export type {
   Cli,
+  CliArgvInspection,
   CliCommandDefinition,
   CliCompletion,
   CliCompletionContext,
@@ -44,6 +46,7 @@ export type {
   CliDefinitionIssue,
   CliDiagnostic,
   CliDefinition,
+  CliExampleDefinition,
   CliMainHandlers,
   CliMainHost,
   CliMainFailure,
