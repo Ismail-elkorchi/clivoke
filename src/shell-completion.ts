@@ -128,50 +128,59 @@ complete -c ${program} -f -a '(__${identifier}_complete)'
 function pwshScript(program: string, executable: string): string {
   return `Register-ArgumentCompleter -Native -CommandName ${program} -ScriptBlock {
   param($wordToComplete, $commandAst, $cursorPosition)
-  function ConvertFrom-ClivokeWord([string]$text) {
-    $result = [System.Text.StringBuilder]::new()
-    $quote = [char]0
-    for ($i = 0; $i -lt $text.Length; $i++) {
-      $char = $text[$i]
-      if ($quote -eq "'") {
-        if ($char -eq "'") {
-          if ($i + 1 -lt $text.Length -and $text[$i + 1] -eq "'") {
-            [void]$result.Append("'"); $i++
-          } else { $quote = [char]0 }
-        } else { [void]$result.Append($char) }
-      } elseif ($char -eq [char]96 -and $i + 1 -lt $text.Length) {
-        $i++
-        if ($text[$i] -eq [char]10) { continue }
-        $escaped = switch -CaseSensitive ($text[$i]) {
-          '0' { [char]0 }
-          'a' { [char]7 }
-          'b' { [char]8 }
-          'e' { [char]27 }
-          'f' { [char]12 }
-          'n' { [char]10 }
-          'r' { [char]13 }
-          't' { [char]9 }
-          'v' { [char]11 }
-          default { $text[$i] }
-        }
-        [void]$result.Append($escaped)
-      } elseif ($quote -eq '"') {
-        if ($char -eq '"') {
-          if ($i + 1 -lt $text.Length -and $text[$i + 1] -eq '"') {
-            [void]$result.Append('"'); $i++
-          } else { $quote = [char]0 }
-        } else { [void]$result.Append($char) }
-      } elseif ($char -eq "'" -or $char -eq '"') {
-        $quote = $char
-      } else { [void]$result.Append($char) }
+  function Read-ClivokeLiteral($node) {
+    if ($node -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+      return @{ Value = $node.Value }
     }
-    $result.ToString()
+    if ($node -is [System.Management.Automation.Language.ConstantExpressionAst]) {
+      # Native arguments preserve numeric spelling rather than evaluating it.
+      return @{ Value = $node.Extent.Text }
+    }
+    return $null
   }
+  function ConvertFrom-ClivokeWord([string]$text) {
+    if ($text.Length -eq 0) { return @{ Value = '' } }
+    # Parse as one argument, without evaluating variables, expressions or code.
+    $prefix = 'clivoke '
+    $source = $prefix + $text
+    $tokens = $null; $errors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0 -and ($errors.Count -ne 1 -or
+        $errors[0].ErrorId -ne 'TerminatorExpectedAtEndOfString' -or
+        -not $errors[0].IncompleteInput)) { return $null }
+    if ($tokens.Where({ $_.Kind -eq 'Comment' }).Count -ne 0 -or
+        $null -eq $ast.EndBlock -or $ast.EndBlock.Statements.Count -ne 1 -or
+        ($null -ne $ast.EndBlock.Traps -and $ast.EndBlock.Traps.Count -ne 0)) { return $null }
+    $pipeline = $ast.EndBlock.Statements[0]
+    if ($pipeline -isnot [System.Management.Automation.Language.PipelineAst] -or
+        $pipeline.Background -or $pipeline.PipelineElements.Count -ne 1) { return $null }
+    $command = $pipeline.PipelineElements[0]
+    if ($command -isnot [System.Management.Automation.Language.CommandAst] -or
+        $command.Redirections.Count -ne 0 -or $command.CommandElements.Count -ne 2) { return $null }
+    $argument = $command.CommandElements[1]
+    if ($argument.Extent.StartOffset -ne $prefix.Length -or
+        $argument.Extent.EndOffset -ne $source.Length -or
+        $argument.Extent.Text -cne $text) { return $null }
+    if ($argument -is [System.Management.Automation.Language.CommandParameterAst]) {
+      if ($null -eq $argument.Argument) { return @{ Value = $argument.Extent.Text } }
+      # A separated colon argument is two native argv entries, despite one AST.
+      if ($tokens[1].Kind -ne 'Parameter' -or
+          $tokens[1].Extent.EndOffset -ne $argument.Argument.Extent.StartOffset) { return $null }
+      $value = Read-ClivokeLiteral $argument.Argument
+      if ($null -eq $value -or $argument.Argument.Extent.EndOffset -ne $source.Length) { return $null }
+      $length = $argument.Argument.Extent.StartOffset - $argument.Extent.StartOffset
+      return @{ Value = $text.Substring(0, $length) + $value.Value }
+    }
+    Read-ClivokeLiteral $argument
+  }
+  if ($commandAst.Redirections.Count -ne 0) { return }
   $words = [System.Collections.Generic.List[string]]::new()
   foreach ($element in $commandAst.CommandElements) {
     if ($element.Extent.StartOffset -gt $cursorPosition) { break }
     $length = [Math]::Min($element.Extent.Text.Length, $cursorPosition - $element.Extent.StartOffset)
-    $words.Add((ConvertFrom-ClivokeWord $element.Extent.Text.Substring(0, $length)))
+    $literal = ConvertFrom-ClivokeWord $element.Extent.Text.Substring(0, $length)
+    if ($null -eq $literal) { return }
+    $words.Add($literal.Value)
     if ($element.Extent.EndOffset -ge $cursorPosition) { break }
   }
   if ($words.Count -eq 0) { $words.Add(${program}) }
@@ -182,7 +191,7 @@ function pwshScript(program: string, executable: string): string {
   & ${executable} lines $current @words | ForEach-Object {
     $value = [string]$_
     if ($value.Length -gt 0) {
-      $quoted = "'" + $value.Replace("'", "''") + "'"
+      $quoted = "'" + [System.Management.Automation.Language.CodeGeneration]::EscapeSingleQuotedStringContent($value) + "'"
       [System.Management.Automation.CompletionResult]::new($quoted, $value, 'ParameterValue', $value)
     }
   }
@@ -199,5 +208,6 @@ function fishQuote(value: string): string {
 }
 
 function powerShellQuote(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+  // PowerShell treats these smart quotes as single-quote delimiters too.
+  return `'${value.replaceAll(/['\u2018-\u201b]/gu, '$&$&')}'`;
 }

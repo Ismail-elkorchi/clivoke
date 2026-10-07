@@ -193,7 +193,9 @@ candidate values as literal shell arguments. Bash also joins its `=` and `:`
 wordbreak fragments and uses the command-line cursor position rather than `COMP_CWORD`.
 All adapters have a literal-word contract: computed variables, substitutions,
 globbing, and redirection-dependent argument vectors are not supported. The
-adapters never evaluate input to resolve those expressions.
+adapters never evaluate input to resolve those expressions. PowerShell uses its
+native parser for literal words and declines nodes spanning multiple native
+arguments, such as `-x: 'value'`, without invoking the companion.
 The Bash adapter completes literal simple-command words, including ordinary
 single/double quotes and backslash escapes. It returns no candidates when the
 prefix contains unquoted redirections or shell expansions instead of guessing
