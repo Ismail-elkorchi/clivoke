@@ -72,7 +72,7 @@
   },
   "dependencies": {
     "@ismail-elkorchi/cli-core": "git+https://github.com/Ismail-elkorchi/cli-core.git#17c21b68317faf06cca2c3d322a0c6c442874f5b",
-    "argv-flags": "git+https://github.com/Ismail-elkorchi/argv-flags.git#d8b2815b73499602758c2cb7ef3d7f654aa7bc73"
+    "argv-flags": "git+https://github.com/Ismail-elkorchi/argv-flags.git#459a4edce8dd0ee3d603a820dc21a7852a66e18f"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -9,7 +9,7 @@ import {
 } from '@ismail-elkorchi/cli-core';
 import {
   createArgvCursor,
-  createParserFromMap,
+  createParser,
   type OptionDefinitionMap,
   type ParseIssue,
   type Parser,
@@ -34,7 +34,7 @@ export type RuntimeParser = Parser<OptionDefinitionMap>;
 
 /** Compiles one immutable parser from a command's effective option definitions. */
 export function compileOptionParser(definitions: CliOptionDefinitions): RuntimeParser {
-  return createParserFromMap(stripPresentation(definitions));
+  return createParser(stripPresentation(definitions));
 }
 
 /** Routes and decodes one owned classification using composed option scopes. */
