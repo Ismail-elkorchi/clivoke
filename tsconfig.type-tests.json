@@ -5,7 +5,12 @@
     "declarationMap": false,
     "isolatedDeclarations": false,
     "noEmit": true,
-    "rootDir": "."
+    "rootDir": ".",
+    "types": [
+      "node"
+    ]
   },
-  "include": ["tests/types/**/*.ts"]
+  "include": [
+    "tests/types/**/*.ts"
+  ]
 }

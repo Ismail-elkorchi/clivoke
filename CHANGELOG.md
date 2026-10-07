@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Compile option declarations once and share one scope-aware classification across routing, controls, inspection, completion, and decoding
+- Preserve selected-command diagnostics on malformed input and leave uncertain suffixes unclassified
+- Keep help/version controls outside the domain command model and avoid decoding values for control actions
+- Support widened and mixed static/dynamic TypeScript definitions without unbounded recursion
+- Await complete Node/Bun and Deno output delivery; keep output failures separate from handler failures
+- Add application-owned outcome rendering hooks to the existing runner, replacing the narrower diagnostic formatter hook
+- Validate sensitivity and omit automatic sensitive defaults and choices from help/completion
+- Normalize shell editing state and insert completion candidates as literal arguments
+
 ## 0.2.0 - 2026-08-23
 
 - Added `help`, `help <command>`, and no-argument help for non-invokable roots.

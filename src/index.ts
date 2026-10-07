@@ -52,6 +52,7 @@ export type {
   CliMainFailure,
   CliMainInput,
   CliMainOutput,
+  CliMainPresentation,
   CliOptionDefinition,
   CliOptionDefinitions,
   CliInvocationFailure,
@@ -65,7 +66,8 @@ export type {
   CliStructuredInvocationInput,
   CliVersionRequest,
   DenoLike,
-  ProcessLike
+  ProcessLike,
+  ProcessOutput
 } from './public-types.ts';
 export type {
   CliHelp

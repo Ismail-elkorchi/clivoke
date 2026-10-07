@@ -713,3 +713,133 @@ test('explicit presentation labels cover values the parser cannot describe gener
   assert.equal(option?.implicitValueLabel, 'auto');
   assert.equal(option?.defaultLabel, 'configured region');
 });
+
+
+test('sensitive declarations validate their policy and do not publish raw defaults or choices', async () => {
+  assert.throws(() => createCli({ name: 'ship', options: {
+    token: { type: 'string', flags: ['--token'], sensitive: 'true' }
+  } }), CliDefinitionError);
+  const sensitiveCli = createCli({ name: 'ship', options: {
+    token: { type: value.choice(['SECRET-A', 'SECRET-B']), flags: ['--token'], sensitive: true, default: 'SECRET-A' }
+  } });
+  const help = createCliHelp(sensitiveCli);
+  assert.doesNotMatch(JSON.stringify(help), /SECRET/u);
+  assert.doesNotMatch(formatCliHelp(help), /SECRET/u);
+  assert.deepEqual(await completeCliWords(sensitiveCli, { words: ['ship', '--token', ''] }), []);
+  assert.equal(sensitiveCli.parse().optionValues.token, 'SECRET-A');
+});
+
+
+test('malformed global options retain child grammar and cannot promote values to controls', () => {
+  const app = createCli({ name: 'app', version: '1', options: {
+    progress: { type: 'string', flags: ['--progress'] },
+    json: { type: 'boolean', flags: ['--json'] },
+    debug: { type: 'boolean', flags: ['--debug'] }
+  }, commands: [{ name: 'query', options: { term: { type: 'string', flags: ['--term'] } } }] });
+  for (const term of ['--help', '--version', '--json', '--debug']) {
+    const argv = ['query', '--term', term, '--progress'];
+    const result = app.parse({ argv });
+    assert.equal(result.status, 'invalid');
+    assert.deepEqual(result.command.path, ['query']);
+    assert.equal(result.diagnostics.some((issue) => issue.code === 'CLI_UNKNOWN_FLAG'), false);
+    const inspection = inspectCliArgv(app, argv);
+    assert.deepEqual(inspection.commandPath, ['query']);
+    assert.equal(inspection.options.some((option) => option.flag === term), false);
+    assert.equal(inspection.options.find((option) => option.option === 'term').rawValue, term);
+  }
+  assert.equal(app.parse({ argv: ['query', '--progress', '--help', '--help'] }).status, 'help');
+});
+
+test('uncertain command syntax stays unclassified and never enables suffix controls', async () => {
+  const app = createCli({ name: 'app', version: '1', commands: [{ name: 'query' }] });
+  for (const argv of [['--unknown', 'query', '--version'], ['unknown', '--term', '--help']]) {
+    assert.equal(app.parse({ argv }).status, 'invalid');
+    const inspection = inspectCliArgv(app, argv);
+    assert.ok(inspection.unclassifiedArguments.length > 0);
+    assert.equal(inspection.options.length, 0);
+    assert.deepEqual(await completeCliWords(app, { words: ['app', ...argv, ''] }), []);
+  }
+  assert.ok((await completeCliWords(app, { words: ['/usr/bin/app', 'qu'] })).some((item) => item.value === 'query'));
+});
+
+test('help and version classify without decoding or materializing invocation values', () => {
+  let calls = 0;
+  const app = createCli({ name: 'app', version: '1', options: {
+    token: { type: value.custom({ parse(raw) { calls++; return { success: true, value: raw }; }, accepts(x) { return typeof x === 'string'; } }), flags: ['--token'] }
+  } });
+  assert.equal(app.parse({ argv: ['--token', 'value', '--help'] }).status, 'help');
+  assert.equal(app.parse({ argv: ['--token', 'value', '--version'] }).status, 'version');
+  assert.equal(calls, 0);
+  assert.equal(app.parse({ argv: ['--token', 'value'] }).status, 'ready');
+  assert.equal(calls, 1);
+});
+
+test('defaults are compiled once per declaration rather than per inherited scope', () => {
+  let snapshots = 0;
+  const app = createCli({ name: 'app', options: { token: {
+    type: value.custom({ parse(raw) { return { success: true, value: raw }; }, accepts(x) { return typeof x === 'string'; }, snapshot(x) { snapshots++; return x; } }),
+    flags: ['--token'], default: 'default'
+  } }, commands: [{ name: 'one' }, { name: 'two' }] });
+  assert.equal(snapshots, 1);
+  assert.equal(app.parse({ argv: ['one'] }).status, 'ready');
+});
+
+
+test('scalar custom array defaults remain parser-owned across inherited scopes', () => {
+  class Labels extends Array {}
+  const initial = new Labels('one');
+  const labels = value.custom({
+    parse(raw) { return { success: true, value: Object.freeze(new Labels(raw)) }; },
+    accepts(candidate) { return candidate instanceof Labels; },
+    snapshot(candidate) { return Object.freeze(new Labels(...candidate)); }
+  });
+  const app = createCli({ name: 'app', options: {
+    labels: { type: labels, flags: ['--labels'], default: initial, defaultLabel: 'initial labels' }
+  }, commands: [{ name: 'child' }] });
+  initial.push('later');
+  const result = app.parse({ argv: ['child'] });
+  assert.equal(result.status, 'ready');
+  assert.ok(result.optionValues.labels instanceof Labels);
+  assert.deepEqual([...result.optionValues.labels], ['one']);
+});
+
+
+test('transport help metadata cannot mutate future grammar or completion', async () => {
+  const app = createCli({ name: 'app', version: '1' });
+  const help = createCliHelp(app);
+  const control = help.options.find((option) => option.name === 'help');
+  assert.ok(Object.isFrozen(control.flags));
+  assert.throws(() => control.flags.push('--mutated'), TypeError);
+  assert.equal(app.parse({ argv: ['--help'] }).status, 'help');
+  assert.ok((await completeCliWords(app, { words: ['app', '--h'] })).some((candidate) => candidate.value === '--help'));
+});
+
+test('genuine global controls remain recognizable after an unknown command', () => {
+  const app = createCli({ name: 'app', version: '1', options: {
+    json: { type: 'boolean', flags: ['--json'] }, debug: { type: 'boolean', flags: ['--debug'] }
+  }, commands: [{ name: 'query', options: { term: { type: 'string', flags: ['--term'] } } }] });
+  assert.equal(app.parse({ argv: ['unknown', '--help'] }).status, 'help');
+  assert.equal(app.parse({ argv: ['unknown', '--version'] }).status, 'version');
+  const invalid = app.parse({ argv: ['unknown', '--json', '--debug'] });
+  assert.equal(invalid.status, 'invalid');
+  assert.deepEqual(inspectCliArgv(app, ['unknown', '--json', '--debug']).options.map((item) => item.option), ['json', 'debug']);
+  const uncertain = inspectCliArgv(app, ['unknown', '--json', '--term', '--debug']);
+  assert.deepEqual(uncertain.options.map((item) => item.option), ['json']);
+  assert.ok(uncertain.unclassifiedArguments.some((item) => item.value === '--debug'));
+});
+
+
+test('partial malformed clusters never become actionable controls or permit guessed suffixes', () => {
+  const app = createCli({ name: 'app', version: '1', options: {
+    verbose: { type: 'count', flags: ['-v'] }, json: { type: 'boolean', flags: ['--json'] }
+  }, commands: [{ name: 'query' }] });
+  for (const argv of [['-v?', '--help'], ['-h?', '--version'], ['unknown', '-v?', '--json']]) {
+    const result = app.parse({ argv });
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.diagnostics.some((issue) => issue.code === 'INVALID_FLAG_SYNTAX'));
+    const inspection = inspectCliArgv(app, argv);
+    assert.equal(inspection.options.length, 0);
+    assert.ok(inspection.unclassifiedArguments.some((argument) => argument.value.endsWith('?')));
+    assert.ok(inspection.unclassifiedArguments.some((argument) => argument.value === argv.at(-1)));
+  }
+});

@@ -6,6 +6,7 @@ import type {
   CliDefinitionIssue as CoreDefinitionIssue,
   CliExampleDefinition as CoreExampleDefinition,
   CliHandlers,
+  CliHelp,
   CliInvocation,
   CliInvocationFailure as CoreInvocationFailure
 } from '@ismail-elkorchi/cli-core';
@@ -198,30 +199,37 @@ type AcceptsPassthrough<Definition> =
 type NodeIfInvokable<Definition, Node> =
   Definition extends { readonly invokable: false } ? never : Node;
 
+type DynamicCommandNode<ProgramName extends string, ParentPath extends readonly string[]> = CommandTypeNode<
+  ParentPath extends readonly [] ? `${ProgramName} ${string}` : `${ProgramName} ${JoinPath<ParentPath>} ${string}`,
+  readonly [...ParentPath, ...string[]], CliOptionDefinitions,
+  readonly CliPositionalDefinition[], boolean
+>;
+
 type NestedCommandNodes<
   ProgramName extends string,
   Commands extends readonly CliCommandDefinition[],
   ParentPath extends readonly string[],
   InheritedOptions extends CliOptionDefinitions
-> = Commands[number] extends infer Command
-  ? Command extends CliCommandDefinition
-    ? Command['name'] extends infer Name extends string
-      ? MergeOptions<InheritedOptions, CommandOptions<Command>> extends infer Options extends CliOptionDefinitions
-        ? NodeIfInvokable<Command, CommandTypeNode<
-            `${ProgramName} ${JoinPath<readonly [...ParentPath, Name]>}`,
-            readonly [...ParentPath, Name],
-            Options,
-            PositionalsOf<Command>,
-            AcceptsPassthrough<Command>
-          >> | NestedCommandNodes<
-            ProgramName,
-            CommandsOf<Command>,
-            readonly [...ParentPath, Name],
-            Options
-          >
-        : never
+> = Commands extends readonly [
+  infer First extends CliCommandDefinition, ...infer Rest extends readonly CliCommandDefinition[]
+]
+  ? NestedCommandNode<ProgramName, First, ParentPath, InheritedOptions> |
+    NestedCommandNodes<ProgramName, Rest, ParentPath, InheritedOptions>
+  : number extends Commands['length'] ? DynamicCommandNode<ProgramName, ParentPath> : never;
+
+type NestedCommandNode<
+  ProgramName extends string,
+  Command extends CliCommandDefinition,
+  ParentPath extends readonly string[],
+  InheritedOptions extends CliOptionDefinitions
+> = Command['name'] extends infer Name extends string
+  ? string extends Name ? DynamicCommandNode<ProgramName, ParentPath>
+    : MergeOptions<InheritedOptions, CommandOptions<Command>> extends infer Options extends CliOptionDefinitions
+      ? NodeIfInvokable<Command, CommandTypeNode<
+          `${ProgramName} ${JoinPath<readonly [...ParentPath, Name]>}`,
+          readonly [...ParentPath, Name], Options, PositionalsOf<Command>, AcceptsPassthrough<Command>
+        >> | NestedCommandNodes<ProgramName, CommandsOf<Command>, readonly [...ParentPath, Name], Options>
       : never
-    : never
   : never;
 
 type JoinPath<Path extends readonly string[]> = Path extends readonly [
@@ -255,7 +263,9 @@ type SpecifiedOptions<Options extends CliOptionDefinitions> = {
 };
 
 type PositionalValue<Definition extends CliPositionalDefinition> =
-  Definition extends { readonly variadic: true }
+  string extends Definition['name']
+    ? string | readonly string[] | undefined
+    : Definition extends { readonly variadic: true }
     ? readonly string[]
     : Definition extends { readonly required: false }
       ? string | undefined
@@ -391,7 +401,7 @@ type StructuredInputForNode<Node> = Node extends CommandTypeNode<
       readonly optionValues: ParsedValues<Options>;
       readonly specifiedOptions: SpecifiedOptions<Options>;
       readonly positionalValues: PositionalValues<Positionals>;
-    } & (AcceptsPassthrough extends true
+    } & (true extends AcceptsPassthrough
       ? { readonly passthroughArguments?: readonly string[] }
       : { readonly passthroughArguments?: never })
   : never;
@@ -432,6 +442,10 @@ export interface CliArgvInspection {
   readonly positionalArguments: readonly ScannedArgument[];
   readonly passthroughArguments: readonly ScannedArgument[];
   readonly unknownFlags: readonly UnknownFlag[];
+  /** Tokens whose syntax cannot be classified safely. */
+  readonly unclassifiedArguments: readonly ScannedArgument[];
+  /** Transport-owned words such as the built-in help command. */
+  readonly controlArguments: readonly ScannedArgument[];
   readonly doubleDashIndex?: number;
 }
 
@@ -449,6 +463,8 @@ export interface CliCompletionPartialInvocation {
   readonly positionalArguments: readonly ScannedArgument[];
   readonly passthroughArguments: readonly ScannedArgument[];
   readonly unknownFlags: readonly UnknownFlag[];
+  readonly unclassifiedArguments: readonly ScannedArgument[];
+  readonly controlArguments: readonly ScannedArgument[];
 }
 
 interface CompletionContextBase {
@@ -478,6 +494,7 @@ export type CliCompletionProvider = (
 
 /** Completion request using one explicit cursor coordinate system. */
 export interface CliCompletionRequest {
+  /** Complete shell words, including the executable as the first word. */
   readonly words: readonly string[];
   /** Index in `words` of the word being completed; `words.length` means an empty trailing word. */
   readonly cursor?: number;
@@ -529,7 +546,24 @@ export type CliMainFailure =
   | {
       readonly kind: 'unexpected';
       readonly error: unknown;
+    }
+  | {
+      readonly kind: 'output';
+      readonly error: unknown;
     };
+
+/** Shared classified request available to every application-owned renderer. */
+export interface CliMainPresentation<Definition extends CliDefinition, Context> {
+  readonly cli: Cli<Definition>;
+  readonly context: Context;
+  readonly result: CliParseResult<Definition>;
+  readonly inspection: CliArgvInspection;
+}
+
+type MainRenderer<Value, Definition extends CliDefinition, Context, Output = CliMainOutput> = (
+  value: Value,
+  presentation: CliMainPresentation<Definition, Context>
+) => Output | Promise<Output>;
 
 /** Input for the explicit process adapter. */
 export interface CliMainInput<Definition extends CliDefinition, Context> {
@@ -538,7 +572,13 @@ export interface CliMainInput<Definition extends CliDefinition, Context> {
   readonly handlers: CliMainHandlers<Definition, Context>;
   readonly context: Context;
   readonly argv?: readonly string[];
-  readonly formatDiagnostics?: (diagnostics: readonly CliDiagnostic[]) => string;
+  readonly renderHelp?: MainRenderer<CliHelp, Definition, Context>;
+  readonly renderVersion?: MainRenderer<string, Definition, Context>;
+  readonly renderInvalid?: MainRenderer<CliInvocationFailure, Definition, Context>;
+  readonly renderWarnings?: MainRenderer<
+    CliInvocationSuccess<Definition>, Definition, Context, Omit<CliMainOutput, 'exitCode'> & { readonly exitCode?: never }
+  >;
+  readonly renderFailure?: MainRenderer<Exclude<CliMainFailure, { readonly kind: 'output' }>, Definition, Context>;
   readonly observeFailure?: (failure: CliMainFailure) => void | Promise<void>;
 }
 
@@ -551,12 +591,19 @@ export interface CliCompletionMainInput<Definition extends CliDefinition> {
   readonly provideValues?: CliCompletionProvider;
 }
 
+/** A Node-compatible writable stream; completion is signaled by its write callback. */
+export interface ProcessOutput {
+  readonly write: (text: string, callback: (error?: Error | null) => void) => unknown;
+  readonly once: (event: 'error', listener: (error: Error) => void) => unknown;
+  readonly removeListener: (event: 'error', listener: (error: Error) => void) => unknown;
+}
+
 /** Node/Bun-like process object accepted without importing `node:process`. */
 export interface ProcessLike {
   readonly argv: readonly string[];
-  readonly stdout: { readonly write: (text: string) => unknown };
-  readonly stderr: { readonly write: (text: string) => unknown };
-  exitCode?: number;
+  readonly stdout: ProcessOutput;
+  readonly stderr: ProcessOutput;
+  exitCode?: string | number | null | undefined;
 }
 
 /** Deno-like global accepted without importing runtime modules. */

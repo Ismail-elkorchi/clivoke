@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,11 +27,19 @@ test('the packed package works offline in Node, Deno, and Bun', async (context) 
   await run('npm', [
     'install',
     '--offline',
-    '--ignore-scripts',
     '--no-audit',
     '--no-fund',
     ...archives.map((archive) => join(workspace, archive))
   ], workspace);
+  // Git dependencies may legitimately be nested alongside explicit packed
+  // dependencies. Verify the actual consumer resolution, not a top-level
+  // fallback whose declarations could hide an unprepared nested package.
+  const requireFromCli = createRequire(join(workspace, 'node_modules', 'clivoke', 'package.json'));
+  for (const dependency of ['@ismail-elkorchi/cli-core', 'argv-flags']) {
+    const entry = requireFromCli.resolve(dependency);
+    await access(entry);
+    await access(entry.replace(/\.js$/u, '.d.ts'));
+  }
   await writeFile(join(workspace, 'consumer.mjs'), source);
   await writeFile(join(workspace, 'consumer.ts'), typeSource);
   await execFileAsync(process.execPath, [
@@ -123,5 +132,11 @@ const typeSource = `
 import { createCli } from 'clivoke';
 const cli = createCli({ name: 'ship', options: { count: { type: 'count', flags: ['-v'] } } });
 const result = cli.parse({ argv: [] });
-if (result.status === 'ready') { const count: number = result.optionValues.count; void count; }
+if (result.status === 'ready') {
+  const count: number = result.optionValues.count;
+  const command: 'ship' = result.commandKey;
+  // @ts-expect-error packed declarations must not silently degrade to any
+  const invalid: string = result.optionValues.count;
+  void count; void command; void invalid;
+}
 `;

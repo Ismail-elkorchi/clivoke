@@ -1,6 +1,8 @@
+import process from 'node:process';
 import {
   completeCliWords,
   createCli,
+  createProcessCliHost,
   inspectCliArgv,
   runCliMain,
   type CliDiagnostic,
@@ -249,3 +251,34 @@ createCli({
     }
   }
 });
+
+// Reusable and dynamic definitions retain a usable widened boundary.
+import type { Cli, CliCommandDefinition, CliDefinition } from '../../src/index.ts';
+const dynamicDefinition: CliDefinition = { name: 'dynamic', commands: [{ name: 'run' }] };
+const dynamicResult = createCli(dynamicDefinition).parse();
+if (dynamicResult.status === 'ready') {
+  const dynamicKey: string = dynamicResult.commandKey;
+  void dynamicKey;
+}
+function parseDynamic(cli: Cli) { return cli.parse(); }
+void parseDynamic;
+const dynamicCommands: readonly CliCommandDefinition[] = [{ name: 'dynamic' }];
+const mixedCli = createCli({ name: 'mixed', commands: [{ name: 'fixed' }, ...dynamicCommands] });
+const mixedResult = mixedCli.parse();
+if (mixedResult.status === 'ready') {
+  const mixedKey: string = mixedResult.commandKey;
+  void mixedKey;
+}
+
+const partialDefinition = createCli({ name: 'partial', commands: [
+  { name: 'fixed', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'plugins', commands: dynamicCommands }
+] });
+const partialResult = partialDefinition.parse();
+if (partialResult.status === 'ready' && partialResult.commandKey === 'partial fixed') {
+  const exactCount: number = partialResult.optionValues.count;
+  void exactCount;
+}
+
+// The structural host accepts the actual Node process type.
+createProcessCliHost(process);
