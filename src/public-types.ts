@@ -205,31 +205,39 @@ type DynamicCommandNode<ProgramName extends string, ParentPath extends readonly 
   readonly CliPositionalDefinition[], boolean
 >;
 
+// Map known tuple slots in parallel, including prefixes before a dynamic tail.
+// Array methods and the broad numeric index are not declared command slots.
+type KnownCommandIndexes<Commands extends readonly CliCommandDefinition[]> =
+  Extract<Exclude<keyof Commands, keyof readonly CliCommandDefinition[]>, `${number}`>;
+
 type NestedCommandNodes<
   ProgramName extends string,
   Commands extends readonly CliCommandDefinition[],
   ParentPath extends readonly string[],
   InheritedOptions extends CliOptionDefinitions
-> = Commands extends readonly [
-  infer First extends CliCommandDefinition, ...infer Rest extends readonly CliCommandDefinition[]
-]
-  ? NestedCommandNode<ProgramName, First, ParentPath, InheritedOptions> |
-    NestedCommandNodes<ProgramName, Rest, ParentPath, InheritedOptions>
-  : number extends Commands['length'] ? DynamicCommandNode<ProgramName, ParentPath> : never;
+> = Commands extends readonly CliCommandDefinition[] ? {
+  readonly [Index in KnownCommandIndexes<Commands>]: Commands[Index] extends CliCommandDefinition
+    ? NestedCommandNode<ProgramName, Commands[Index], ParentPath, InheritedOptions>
+    : never
+}[KnownCommandIndexes<Commands>] |
+  (number extends Commands['length'] ? DynamicCommandNode<ProgramName, ParentPath> : never) : never;
 
+// Distribute each command before combining its name, values, and descendants.
 type NestedCommandNode<
   ProgramName extends string,
   Command extends CliCommandDefinition,
   ParentPath extends readonly string[],
   InheritedOptions extends CliOptionDefinitions
-> = Command['name'] extends infer Name extends string
-  ? string extends Name ? DynamicCommandNode<ProgramName, ParentPath>
-    : MergeOptions<InheritedOptions, CommandOptions<Command>> extends infer Options extends CliOptionDefinitions
-      ? NodeIfInvokable<Command, CommandTypeNode<
-          `${ProgramName} ${JoinPath<readonly [...ParentPath, Name]>}`,
-          readonly [...ParentPath, Name], Options, PositionalsOf<Command>, AcceptsPassthrough<Command>
-        >> | NestedCommandNodes<ProgramName, CommandsOf<Command>, readonly [...ParentPath, Name], Options>
-      : never
+> = Command extends CliCommandDefinition
+  ? Command['name'] extends infer Name extends string
+    ? string extends Name ? DynamicCommandNode<ProgramName, ParentPath>
+      : MergeOptions<InheritedOptions, CommandOptions<Command>> extends infer Options extends CliOptionDefinitions
+        ? NodeIfInvokable<Command, CommandTypeNode<
+            `${ProgramName} ${JoinPath<readonly [...ParentPath, Name]>}`,
+            readonly [...ParentPath, Name], Options, PositionalsOf<Command>, AcceptsPassthrough<Command>
+          >> | NestedCommandNodes<ProgramName, CommandsOf<Command>, readonly [...ParentPath, Name], Options>
+        : never
+    : never
   : never;
 
 type JoinPath<Path extends readonly string[]> = Path extends readonly [

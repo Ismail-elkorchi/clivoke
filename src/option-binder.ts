@@ -58,7 +58,7 @@ export function createArgvBinder(
             .map((issue) => issue.argvIndex));
           const options = span.options.filter((option) => !malformed.has(option.argvIndex));
           const unknownFlags = span.unknownFlags.filter((flag) => !malformed.has(flag.argvIndex));
-          richOptions.push(...options);
+          for (const option of options) richOptions.push(option);
           const claimed = new Set<number>();
           for (const option of options) {
             claimed.add(option.argvIndex);

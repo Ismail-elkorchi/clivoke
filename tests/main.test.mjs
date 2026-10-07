@@ -396,3 +396,18 @@ test('line completion omits terminal format controls while JSONL remains lossles
   await runCliCompletion({ cli: app, host, argv: ['jsonl', '1', 'app', ''], provideValues() { return candidates; } });
   assert.deepEqual(stdout.trimEnd().split('\n').map((line) => JSON.parse(line)).filter((candidate) => candidate.kind === 'positional-value').map((candidate) => candidate.value), candidates);
 });
+
+test('leading help never dispatches a domain handler with passthrough', async () => {
+  const cli = createCli({ name: 'app', commands: [{ name: 'deploy', acceptsPassthroughArguments: true }] });
+  let calls = 0;
+  const writes = { stdout: '', stderr: '', exitCode: undefined };
+  const host = {
+    argv: ['help', 'deploy', '--', '--force'],
+    writeStdout(text) { writes.stdout += text; },
+    writeStderr(text) { writes.stderr += text; },
+    setExitCode(code) { writes.exitCode = code; }
+  };
+  await runCliMain({ cli, host, handlers: { 'app deploy': () => { calls += 1; } }, context: undefined });
+  assert.equal(calls, 0);
+  assert.match(writes.stdout, /^Usage: app deploy/u);
+});

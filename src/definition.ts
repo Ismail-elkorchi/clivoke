@@ -175,7 +175,9 @@ export function createCli<const Definition extends CliDefinition>(
       program = defineCoreCli(toCoreDefinition(snapshot.definition));
     } catch (error) {
       if (!(error instanceof CoreDefinitionError)) throw error;
-      issues.push(...error.issues.map((issue) => Object.freeze({ ...issue, source: 'command' as const })));
+      for (const issue of error.issues) {
+        issues.push(Object.freeze({ ...issue, source: 'command' as const }));
+      }
     }
     for (const scope of declaredOptionScopes(snapshot.definition)) {
       try {
@@ -183,9 +185,9 @@ export function createCli<const Definition extends CliDefinition>(
         declaredSensitive.set(scope.key, sensitiveOptionNames(scope.options));
       } catch (error) {
         if (!(error instanceof ArgvDefinitionError)) throw error;
-        issues.push(...error.issues.map((issue) => Object.freeze({
-          ...issue, source: 'option' as const, commandPath: scope.path
-        })));
+        for (const issue of error.issues) {
+          issues.push(Object.freeze({ ...issue, source: 'option' as const, commandPath: scope.path }));
+        }
       }
     }
   }
@@ -886,10 +888,9 @@ function findHelpCommandAction(
   route: CliCommandRoute,
   inspection: CliArgvInspection
 ): CliHelpRequest | CliInvocationFailure | undefined {
-  if (inspection.controlArguments.length === 0 || inspection.unknownFlags.length > 0 ||
-      inspection.unclassifiedArguments.length > 0 || inspection.passthroughArguments.length > 0 ||
-      route.classification.diagnostics.length > 0 || route.diagnostics.some((diagnostic) =>
-        diagnostic.severity === 'error' && diagnostic.code !== 'CLI_SUBCOMMAND_REQUIRED')) return undefined;
+  if (inspection.controlArguments.length === 0) return undefined;
+  // A recognized help command owns this invocation, just like --help. Trailing
+  // options, malformed input, or passthrough must never restore domain dispatch.
   const extra = inspection.positionalArguments[0];
   if (extra !== undefined) {
     return Object.freeze({

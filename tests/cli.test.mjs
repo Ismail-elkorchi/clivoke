@@ -843,3 +843,75 @@ test('partial malformed clusters never become actionable controls or permit gues
     assert.ok(inspection.unclassifiedArguments.some((argument) => argument.value === argv.at(-1)));
   }
 });
+
+
+test('leading help owns the invocation even with trailing flags and passthrough', () => {
+  const cli = createCli({ name: 'app', commands: [{
+    name: 'deploy', acceptsPassthroughArguments: true,
+    options: { count: { type: 'integer', flags: ['--count'] } }
+  }] });
+  for (const unknownFlagPolicy of ['error', 'collect']) {
+    for (const argv of [
+      ['help', 'deploy', '--', '--force'],
+      ['help', 'deploy', '--unknown'],
+      ['help', 'deploy', '--count=oops'],
+      ['help', 'deploy', '--help=value'],
+      ['help', 'deploy', '-?']
+    ]) {
+      assert.notEqual(cli.parse({ argv, unknownFlagPolicy }).status, 'ready', argv.join(' '));
+    }
+  }
+});
+
+test('large valid count clusters do not exceed the argument stack', () => {
+  const cli = createCli({ name: 'app', options: { verbose: { type: 'count', flags: ['-v'] } } });
+  const result = cli.parse({ argv: [`-${'v'.repeat(150_000)}`] });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.optionValues.verbose, 150_000);
+});
+
+
+test('large definition issue lists preserve diagnostics without argument-stack overflow', () => {
+  const flags = Array.from({ length: 150_000 }, (_, index) => `invalid${index}`);
+  const aliases = flags.map((flag) => `${flag} alias`);
+  assert.throws(() => createCli({
+    name: 'app', options: { verbose: { type: 'boolean', flags } },
+    commands: [{ name: 'go', aliases }]
+  }), (error) => {
+    assert.ok(error instanceof CliDefinitionError);
+    const commandIssues = error.issues.filter((issue) => issue.source === 'command');
+    const optionIssues = error.issues.filter((issue) => issue.source === 'option');
+    assert.equal(commandIssues.length, flags.length);
+    assert.equal(optionIssues.length, flags.length);
+    assert.equal(commandIssues[0].alias, aliases[0]);
+    assert.equal(commandIssues.at(-1).alias, aliases.at(-1));
+    assert.equal(optionIssues[0].flag, flags[0]);
+    assert.equal(optionIssues.at(-1).flag, flags.at(-1));
+    return true;
+  });
+});
+
+
+test('large passthrough spans retain every argument in order', () => {
+  const cli = createCli({ name: 'app', acceptsPassthroughArguments: true });
+  const args = Array.from({ length: 150_000 }, (_, index) => `arg${index}`);
+  const result = cli.parse({ argv: ['--', ...args] });
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.passthroughArguments, args);
+});
+
+test('terminal unknown parent flags can be collected without guessing later command ownership', () => {
+  const cli = createCli({ name: 'app', commands: [{ name: 'parent', commands: [{ name: 'run' }] }] });
+  for (const [argv, key] of [[['--extra'], 'app'], [['--extra=value'], 'app'], [['parent', '--extra'], 'app parent']]) {
+    const result = cli.parse({ argv, unknownFlagPolicy: 'collect' });
+    assert.equal(result.status, 'ready');
+    assert.equal(result.commandKey, key);
+    assert.equal(result.unknownFlags.length, 1);
+    assert.equal(cli.parse({ argv }).status, 'invalid');
+  }
+  for (const argv of [['--extra', 'parent'], ['parent', '--extra', 'run']]) {
+    const result = cli.parse({ argv, unknownFlagPolicy: 'collect' });
+    assert.equal(result.status, 'invalid');
+    assert.notEqual(result.command?.key, 'app parent run');
+  }
+});
