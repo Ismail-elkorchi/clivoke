@@ -140,7 +140,7 @@ test('command-local flags must follow their command in every value form', () => 
   ]) {
     const result = cli.parse({ argv });
     assert.equal(result.status, 'invalid');
-    assert.equal(result.diagnostics[0]?.code, 'CLI_UNKNOWN_FLAG');
+    assert.deepEqual(result.diagnostics.map((issue) => issue.code), ['CLI_ROUTING_UNCERTAIN', 'CLI_UNKNOWN_FLAG']);
   }
 });
 
@@ -913,5 +913,75 @@ test('terminal unknown parent flags can be collected without guessing later comm
     const result = cli.parse({ argv, unknownFlagPolicy: 'collect' });
     assert.equal(result.status, 'invalid');
     assert.notEqual(result.command?.key, 'app parent run');
+  }
+});
+
+test('scanner and decoder diagnostics contribute each occurrence exactly once', () => {
+  const app = createCli({ name: 'app', options: {
+    token: { type: 'string', flags: ['--token'] },
+    enabled: { type: 'boolean', flags: ['--enabled'] },
+    count: { type: 'integer', flags: ['--count'], multiple: true },
+    required: { type: 'string', flags: ['--required'], required: true }
+  } });
+  for (const [argv, expected] of [
+    [['--required', 'yes', '--token'], ['MISSING_OPTION_VALUE']],
+    [['--required', 'yes', '--enabled=no'], ['UNEXPECTED_OPTION_VALUE']],
+    [['--required', 'yes', '-?'], ['INVALID_FLAG_SYNTAX']],
+    [['--enabled=no', '--count=bad', '--count=bad', '--token'], [
+      'UNEXPECTED_OPTION_VALUE', 'MISSING_OPTION_VALUE',
+      'INVALID_OPTION_VALUE', 'INVALID_OPTION_VALUE', 'MISSING_REQUIRED_OPTION'
+    ]]
+  ]) {
+    const result = app.parse({ argv });
+    assert.equal(result.status, 'invalid');
+    assert.deepEqual(result.diagnostics.map((issue) => issue.code), expected);
+    const invalidValues = result.diagnostics.filter((issue) => issue.code === 'INVALID_OPTION_VALUE');
+    if (invalidValues.length > 0) {
+      assert.deepEqual(invalidValues.map((issue) => issue.argvIndex), [1, 2]);
+      assert.deepEqual(invalidValues.map((issue) => issue.rawValue), ['bad', 'bad']);
+    }
+  }
+});
+
+test('unknown policy applies once alongside lexical and semantic failures', () => {
+  const app = createCli({ name: 'app', options: {
+    count: { type: 'integer', flags: ['--count'], sensitive: true },
+    token: { type: 'string', flags: ['--token'] }
+  } });
+  for (const unknownFlagPolicy of ['error', 'collect']) {
+    for (const [argv, optionCode] of [
+      [['--unknown', '--token'], 'MISSING_OPTION_VALUE'],
+      [['--unknown', '--count=secret'], 'INVALID_OPTION_VALUE']
+    ]) {
+      const result = app.parse({ argv, unknownFlagPolicy });
+      assert.equal(result.status, 'invalid');
+      assert.equal(result.unknownFlags.length, 1);
+      assert.equal(result.diagnostics.filter((issue) => issue.code === optionCode).length, 1);
+      assert.equal(result.diagnostics.filter((issue) => issue.code === 'CLI_UNKNOWN_FLAG').length,
+        unknownFlagPolicy === 'error' ? 1 : 0);
+      assert.equal(result.diagnostics.length, unknownFlagPolicy === 'error' ? 2 : 1);
+      if (optionCode === 'INVALID_OPTION_VALUE') {
+        const issue = result.diagnostics.find((issue) => issue.code === optionCode);
+        assert.equal(issue.sensitive, true);
+        assert.equal(issue.rawValue, 'secret');
+      }
+    }
+  }
+});
+
+test('collect preserves routing uncertainty while controls retain their classification boundary', () => {
+  const app = createCli({ name: 'app', version: '1', commands: [{ name: 'child' }] });
+  for (const unknownFlagPolicy of ['error', 'collect']) {
+    const uncertain = app.parse({ argv: ['--unknown', 'child', '--help'], unknownFlagPolicy });
+    assert.equal(uncertain.status, 'invalid');
+    assert.equal(uncertain.diagnostics.filter((issue) => issue.code === 'CLI_ROUTING_UNCERTAIN').length, 1);
+    assert.equal(uncertain.diagnostics.filter((issue) => issue.code === 'CLI_UNKNOWN_FLAG').length,
+      unknownFlagPolicy === 'error' ? 1 : 0);
+    const known = app.parse({ argv: ['child', '--unknown'], unknownFlagPolicy });
+    assert.equal(known.status, unknownFlagPolicy === 'error' ? 'invalid' : 'ready');
+    assert.equal(known.diagnostics.filter((issue) => issue.code === 'CLI_UNKNOWN_FLAG').length,
+      unknownFlagPolicy === 'error' ? 1 : 0);
+    assert.equal(app.parse({ argv: ['child', '--unknown', '--help'], unknownFlagPolicy }).status, 'help');
+    assert.equal(app.parse({ argv: ['child', '--unknown', '--version'], unknownFlagPolicy }).status, 'version');
   }
 });

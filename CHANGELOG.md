@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Use cli-core 0.4 command callbacks and shared unknown-flag policy, with lexical and semantic diagnostics contributed exactly once
+- Upgrade argv-flags to published 4.0.0 with cross-copy custom default snapshots
+
 - Compile option declarations once and share one scope-aware classification across routing, controls, inspection, completion, and decoding
 - Preserve selected-command diagnostics on malformed input and leave uncertain suffixes unclassified
 - Keep help/version controls outside the domain command model and avoid decoding values for control actions

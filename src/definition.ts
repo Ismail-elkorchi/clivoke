@@ -3,7 +3,6 @@ import {
   createCliInvocation as createCoreInvocation,
   defineCli as defineCoreCli,
   type CliCommandDefinition as CoreCommandDefinition,
-  type CliCoreDiagnostic,
   type CliCommandRoute,
   type CliDefinition as CoreDefinition,
   type CliInvocationResult as CoreInvocationResult,
@@ -215,8 +214,8 @@ export function createCli<const Definition extends CliDefinition>(
     sensitiveOptions.set(scope.key, sensitive);
   }
   const invocationParser = createArgvBinder(optionParsers, controlNames);
-  const translate = (invocation: CoreInvocationResult, policy: 'error' | 'collect' = 'error') =>
-    translateInvocation(invocation, sensitiveOptions, policy) as CliInvocationResult<Definition>;
+  const translate = (invocation: CoreInvocationResult) =>
+    translateInvocation(invocation, sensitiveOptions) as CliInvocationResult<Definition>;
   const inspect = (input: readonly string[]): CliArgvInspection => {
     const argv = readParseInput({ argv: input }).argv ?? [];
     return invocationParser.inspect(invocationParser.route(domain, { argv }));
@@ -231,7 +230,7 @@ export function createCli<const Definition extends CliDefinition>(
     const action = helpCommand ?? (argv.length === 0 && !domain.root.invokable
       ? Object.freeze({ status: 'help' as const, commandPath: Object.freeze([]) })
       : findControlAction(inspection, definition.version));
-    const result = action ?? translate(invocationParser.bind(route, { unknownFlagPolicy }), unknownFlagPolicy);
+    const result = action ?? translate(invocationParser.bind(route, { unknownFlagPolicy }));
     return Object.freeze({ result, inspection });
   };
   const cli: Cli<Definition> = Object.freeze({
@@ -929,8 +928,7 @@ type TranslatedInvocation = CoreInvocationResult extends infer Invocation
 
 function translateInvocation(
   invocation: CoreInvocationResult,
-  sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>,
-  unknownFlagPolicy: 'error' | 'collect'
+  sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>
 ): TranslatedInvocation {
   const commandSensitiveOptions = invocation.command === undefined
     ? undefined
@@ -951,37 +949,5 @@ function translateInvocation(
         : {})
     }) as CliOptionDiagnostic;
   });
-  if (unknownFlagPolicy === 'error') {
-    for (const flag of invocation.unknownFlags) {
-      const alreadyReported = diagnostics.some((diagnostic) =>
-        diagnostic.code === 'CLI_UNKNOWN_FLAG' &&
-        'argvIndex' in diagnostic && diagnostic.argvIndex === flag.argvIndex &&
-        'flag' in diagnostic && diagnostic.flag === flag.flag);
-      if (!alreadyReported) diagnostics.push(unknownFlagDiagnostic(flag));
-    }
-  }
-  if (invocation.status === 'ready') {
-    return Object.freeze({
-      ...invocation,
-      diagnostics: Object.freeze(diagnostics)
-    });
-  }
   return Object.freeze({ ...invocation, diagnostics: Object.freeze(diagnostics) });
-}
-
-function unknownFlagDiagnostic(
-  flag: CoreInvocationResult['unknownFlags'][number]
-): CliCoreDiagnostic {
-  return Object.freeze({
-    source: 'invocation',
-    code: 'CLI_UNKNOWN_FLAG',
-    severity: 'error',
-    message: `Unknown flag: ${flag.flag}.`,
-    flag: flag.flag,
-    argvElement: flag.argvElement,
-    argvIndex: flag.argvIndex,
-    ...(flag.offset === undefined ? {} : { offset: flag.offset }),
-    ...(flag.inlineValue === undefined ? {} : { inlineValue: flag.inlineValue }),
-    ...(flag.suggestions === undefined ? {} : { suggestions: flag.suggestions })
-  });
 }

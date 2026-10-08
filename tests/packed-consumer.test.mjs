@@ -134,6 +134,19 @@ for (const argv of [['help', 'deploy', '--', '--force'], ['help', 'deploy', '--u
 const countCli = createCli({ name: 'count', options: { verbose: { type: 'count', flags: ['-v'] } } });
 const large = countCli.parse({ argv: ['-' + 'v'.repeat(150_000)] });
 if (large.status !== 'ready' || large.optionValues.verbose !== 150_000) throw new Error('large cluster failed');
+const invalidCli = createCli({ name: 'invalid', options: {
+  token: { type: 'string', flags: ['--token'] },
+  count: { type: 'integer', flags: ['--count'] }
+} });
+for (const unknownFlagPolicy of ['error', 'collect']) {
+  const invalid = invalidCli.parse({ argv: ['--unknown', '--count=bad', '--token'], unknownFlagPolicy });
+  const codes = invalid.diagnostics.map((issue) => issue.code).sort();
+  const expected = ['INVALID_OPTION_VALUE', 'MISSING_OPTION_VALUE'];
+  if (unknownFlagPolicy === 'error') expected.push('CLI_UNKNOWN_FLAG');
+  if (invalid.status !== 'invalid' || JSON.stringify(codes) !== JSON.stringify(expected.sort())) {
+    throw new Error('scanner, decoder, and unknown policy lost diagnostic ownership');
+  }
+}
 console.log(JSON.stringify({ region: result.optionValues.region, command: result.command.key }));
 `;
 

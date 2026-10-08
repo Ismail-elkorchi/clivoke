@@ -182,6 +182,13 @@ suffix using a guessed command scope. Built-in help words are reported in
 it uses the configured grammar, an argv element such as `--json` is not
 misclassified when it is the value of another option.
 
+Unknown flags are errors by default. `unknownFlagPolicy: "collect"` retains them
+in inspection and invocation results without adding `CLI_UNKNOWN_FLAG` errors,
+even when an option value is invalid. It does not resolve an uncertain command
+route: an unknown flag before command selection still produces
+`CLI_ROUTING_UNCERTAIN`, and its suffix remains unclassified. Lexical and value
+diagnostics each appear once, with their original locations.
+
 `createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
 dedicated companion executable, named `<program>-complete` by default.
 `runCliCompletion()` implements that executable with newline or JSON-lines

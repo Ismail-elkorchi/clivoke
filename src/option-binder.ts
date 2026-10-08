@@ -4,7 +4,7 @@ import {
   type CliCommandRoute,
   type CliInvocationParser,
   type CliOptionBinder,
-  type CliOptionScope,
+  type CliCommand,
   type CliScannedOption
 } from '@ismail-elkorchi/cli-core';
 import {
@@ -13,7 +13,8 @@ import {
   type OptionDefinitionMap,
   type ParseIssue,
   type Parser,
-  type ScannedOption
+  type ScannedOption,
+  type ScanIssue
 } from 'argv-flags';
 import type { CliArgvInspection, CliOptionDefinition, CliOptionDefinitions } from './public-types.ts';
 
@@ -50,8 +51,8 @@ export function createArgvBinder(
       occurrences.set(argv, richOptions);
       let firstArgument = true;
       return {
-        next(scope) {
-          const span = parserFor(parsers, scope).scanNext(cursor);
+        next(command) {
+          const span = parserFor(parsers, command).scanNext(cursor);
           // A malformed cluster can contain a recognized prefix. None of that
           // token is actionable until its complete syntax is trustworthy.
           const malformed = new Set(span.issues.filter((issue) => issue.code === 'INVALID_FLAG_SYNTAX')
@@ -71,7 +72,7 @@ export function createArgvBinder(
           for (let index = span.startIndex; index < span.endIndex; index += 1) {
             if (!claimed.has(index)) unclassified.push(Object.freeze({ value: argv[index] ?? '', argvIndex: index }));
           }
-          const controls = firstArgument && scope.command.path.length === 0 && span.arguments[0]?.value === 'help'
+          const controls = firstArgument && command.path.length === 0 && span.arguments[0]?.value === 'help'
             ? span.arguments : [];
           if (span.arguments.length > 0) firstArgument = false;
           return {
@@ -87,10 +88,10 @@ export function createArgvBinder(
             ...(span.doubleDashIndex === undefined ? {} : { doubleDashArgvIndex: span.doubleDashIndex })
           };
         },
-        bind(scope) {
-          const result = parserFor(parsers, scope).decode(cursor, { unknownFlagPolicy: 'collect' });
+        bind(command) {
+          const result = parserFor(parsers, command).decode(cursor, { unknownFlagPolicy: 'collect' });
           if (!result.success) return {
-            status: 'invalid', diagnostics: result.issues.map(translateIssue)
+            status: 'invalid', diagnostics: result.issues.filter(isDecoderIssue).map(translateIssue)
           };
           const values = Object.create(null) as Record<string, unknown>;
           const specified = Object.create(null) as Record<string, boolean>;
@@ -139,9 +140,9 @@ function translateScannedOption(option: ScannedOption): CliScannedOption {
     : location;
 }
 
-function parserFor(parsers: ReadonlyMap<string, RuntimeParser>, scope: CliOptionScope): RuntimeParser {
-  const parser = parsers.get(scope.command.key);
-  if (parser === undefined) throw new TypeError(`Missing option parser for command ${scope.command.key}.`);
+function parserFor(parsers: ReadonlyMap<string, RuntimeParser>, command: CliCommand): RuntimeParser {
+  const parser = parsers.get(command.key);
+  if (parser === undefined) throw new TypeError(`Missing option parser for command ${command.key}.`);
   return parser;
 }
 
@@ -185,4 +186,17 @@ function stripPresentation(definitions: CliOptionDefinitions): OptionDefinitionM
 function translateIssue(issue: ParseIssue) {
   const { code, message, ...details } = issue;
   return createCliOptionDiagnostic(code, 'error', message, details);
+}
+
+// argv-flags decode includes scanner issues as well as semantic issues. The
+// scanner owns these diagnostics in next(); bind contributes only decoder issues.
+// Keep this exhaustive over ScanIssue so a new lexical issue requires ownership.
+const scannerIssueCodes = {
+  INVALID_FLAG_SYNTAX: true,
+  MISSING_OPTION_VALUE: true,
+  UNEXPECTED_OPTION_VALUE: true
+} satisfies Record<ScanIssue['code'], true>;
+
+function isDecoderIssue(issue: ParseIssue): boolean {
+  return !Object.hasOwn(scannerIssueCodes, issue.code);
 }
