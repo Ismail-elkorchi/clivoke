@@ -140,7 +140,7 @@ test('command-local flags must follow their command in every value form', () => 
   ]) {
     const result = cli.parse({ argv });
     assert.equal(result.status, 'invalid');
-    assert.equal(result.diagnostics[0]?.code, 'CLI_UNKNOWN_FLAG');
+    assert.deepEqual(result.diagnostics.map((issue) => issue.code), ['CLI_ROUTING_UNCERTAIN', 'CLI_UNKNOWN_FLAG']);
   }
 });
 
@@ -712,4 +712,276 @@ test('explicit presentation labels cover values the parser cannot describe gener
   assert.equal(option?.valueDescription, 'Deployment region or auto selection.');
   assert.equal(option?.implicitValueLabel, 'auto');
   assert.equal(option?.defaultLabel, 'configured region');
+});
+
+
+test('sensitive declarations validate their policy and do not publish raw defaults or choices', async () => {
+  assert.throws(() => createCli({ name: 'ship', options: {
+    token: { type: 'string', flags: ['--token'], sensitive: 'true' }
+  } }), CliDefinitionError);
+  const sensitiveCli = createCli({ name: 'ship', options: {
+    token: { type: value.choice(['SECRET-A', 'SECRET-B']), flags: ['--token'], sensitive: true, default: 'SECRET-A' }
+  } });
+  const help = createCliHelp(sensitiveCli);
+  assert.doesNotMatch(JSON.stringify(help), /SECRET/u);
+  assert.doesNotMatch(formatCliHelp(help), /SECRET/u);
+  assert.deepEqual(await completeCliWords(sensitiveCli, { words: ['ship', '--token', ''] }), []);
+  assert.equal(sensitiveCli.parse().optionValues.token, 'SECRET-A');
+});
+
+
+test('malformed global options retain child grammar and cannot promote values to controls', () => {
+  const app = createCli({ name: 'app', version: '1', options: {
+    progress: { type: 'string', flags: ['--progress'] },
+    json: { type: 'boolean', flags: ['--json'] },
+    debug: { type: 'boolean', flags: ['--debug'] }
+  }, commands: [{ name: 'query', options: { term: { type: 'string', flags: ['--term'] } } }] });
+  for (const term of ['--help', '--version', '--json', '--debug']) {
+    const argv = ['query', '--term', term, '--progress'];
+    const result = app.parse({ argv });
+    assert.equal(result.status, 'invalid');
+    assert.deepEqual(result.command.path, ['query']);
+    assert.equal(result.diagnostics.some((issue) => issue.code === 'CLI_UNKNOWN_FLAG'), false);
+    const inspection = inspectCliArgv(app, argv);
+    assert.deepEqual(inspection.commandPath, ['query']);
+    assert.equal(inspection.options.some((option) => option.flag === term), false);
+    assert.equal(inspection.options.find((option) => option.option === 'term').rawValue, term);
+  }
+  assert.equal(app.parse({ argv: ['query', '--progress', '--help', '--help'] }).status, 'help');
+});
+
+test('uncertain command syntax stays unclassified and never enables suffix controls', async () => {
+  const app = createCli({ name: 'app', version: '1', commands: [{ name: 'query' }] });
+  for (const argv of [['--unknown', 'query', '--version'], ['unknown', '--term', '--help']]) {
+    assert.equal(app.parse({ argv }).status, 'invalid');
+    const inspection = inspectCliArgv(app, argv);
+    assert.ok(inspection.unclassifiedArguments.length > 0);
+    assert.equal(inspection.options.length, 0);
+    assert.deepEqual(await completeCliWords(app, { words: ['app', ...argv, ''] }), []);
+  }
+  assert.ok((await completeCliWords(app, { words: ['/usr/bin/app', 'qu'] })).some((item) => item.value === 'query'));
+});
+
+test('help and version classify without decoding or materializing invocation values', () => {
+  let calls = 0;
+  const app = createCli({ name: 'app', version: '1', options: {
+    token: { type: value.custom({ parse(raw) { calls++; return { success: true, value: raw }; }, accepts(x) { return typeof x === 'string'; } }), flags: ['--token'] }
+  } });
+  assert.equal(app.parse({ argv: ['--token', 'value', '--help'] }).status, 'help');
+  assert.equal(app.parse({ argv: ['--token', 'value', '--version'] }).status, 'version');
+  assert.equal(calls, 0);
+  assert.equal(app.parse({ argv: ['--token', 'value'] }).status, 'ready');
+  assert.equal(calls, 1);
+});
+
+test('defaults are compiled once per declaration rather than per inherited scope', () => {
+  let snapshots = 0;
+  const app = createCli({ name: 'app', options: { token: {
+    type: value.custom({ parse(raw) { return { success: true, value: raw }; }, accepts(x) { return typeof x === 'string'; }, snapshot(x) { snapshots++; return x; } }),
+    flags: ['--token'], default: 'default'
+  } }, commands: [{ name: 'one' }, { name: 'two' }] });
+  assert.equal(snapshots, 1);
+  assert.equal(app.parse({ argv: ['one'] }).status, 'ready');
+});
+
+
+test('scalar custom array defaults remain parser-owned across inherited scopes', () => {
+  class Labels extends Array {}
+  const initial = new Labels('one');
+  const labels = value.custom({
+    parse(raw) { return { success: true, value: Object.freeze(new Labels(raw)) }; },
+    accepts(candidate) { return candidate instanceof Labels; },
+    snapshot(candidate) { return Object.freeze(new Labels(...candidate)); }
+  });
+  const app = createCli({ name: 'app', options: {
+    labels: { type: labels, flags: ['--labels'], default: initial, defaultLabel: 'initial labels' }
+  }, commands: [{ name: 'child' }] });
+  initial.push('later');
+  const result = app.parse({ argv: ['child'] });
+  assert.equal(result.status, 'ready');
+  assert.ok(result.optionValues.labels instanceof Labels);
+  assert.deepEqual([...result.optionValues.labels], ['one']);
+});
+
+
+test('transport help metadata cannot mutate future grammar or completion', async () => {
+  const app = createCli({ name: 'app', version: '1' });
+  const help = createCliHelp(app);
+  const control = help.options.find((option) => option.name === 'help');
+  assert.ok(Object.isFrozen(control.flags));
+  assert.throws(() => control.flags.push('--mutated'), TypeError);
+  assert.equal(app.parse({ argv: ['--help'] }).status, 'help');
+  assert.ok((await completeCliWords(app, { words: ['app', '--h'] })).some((candidate) => candidate.value === '--help'));
+});
+
+test('genuine global controls remain recognizable after an unknown command', () => {
+  const app = createCli({ name: 'app', version: '1', options: {
+    json: { type: 'boolean', flags: ['--json'] }, debug: { type: 'boolean', flags: ['--debug'] }
+  }, commands: [{ name: 'query', options: { term: { type: 'string', flags: ['--term'] } } }] });
+  assert.equal(app.parse({ argv: ['unknown', '--help'] }).status, 'help');
+  assert.equal(app.parse({ argv: ['unknown', '--version'] }).status, 'version');
+  const invalid = app.parse({ argv: ['unknown', '--json', '--debug'] });
+  assert.equal(invalid.status, 'invalid');
+  assert.deepEqual(inspectCliArgv(app, ['unknown', '--json', '--debug']).options.map((item) => item.option), ['json', 'debug']);
+  const uncertain = inspectCliArgv(app, ['unknown', '--json', '--term', '--debug']);
+  assert.deepEqual(uncertain.options.map((item) => item.option), ['json']);
+  assert.ok(uncertain.unclassifiedArguments.some((item) => item.value === '--debug'));
+});
+
+
+test('partial malformed clusters never become actionable controls or permit guessed suffixes', () => {
+  const app = createCli({ name: 'app', version: '1', options: {
+    verbose: { type: 'count', flags: ['-v'] }, json: { type: 'boolean', flags: ['--json'] }
+  }, commands: [{ name: 'query' }] });
+  for (const argv of [['-v?', '--help'], ['-h?', '--version'], ['unknown', '-v?', '--json']]) {
+    const result = app.parse({ argv });
+    assert.equal(result.status, 'invalid');
+    assert.ok(result.diagnostics.some((issue) => issue.code === 'INVALID_FLAG_SYNTAX'));
+    const inspection = inspectCliArgv(app, argv);
+    assert.equal(inspection.options.length, 0);
+    assert.ok(inspection.unclassifiedArguments.some((argument) => argument.value.endsWith('?')));
+    assert.ok(inspection.unclassifiedArguments.some((argument) => argument.value === argv.at(-1)));
+  }
+});
+
+
+test('leading help owns the invocation even with trailing flags and passthrough', () => {
+  const cli = createCli({ name: 'app', commands: [{
+    name: 'deploy', acceptsPassthroughArguments: true,
+    options: { count: { type: 'integer', flags: ['--count'] } }
+  }] });
+  for (const unknownFlagPolicy of ['error', 'collect']) {
+    for (const argv of [
+      ['help', 'deploy', '--', '--force'],
+      ['help', 'deploy', '--unknown'],
+      ['help', 'deploy', '--count=oops'],
+      ['help', 'deploy', '--help=value'],
+      ['help', 'deploy', '-?']
+    ]) {
+      assert.notEqual(cli.parse({ argv, unknownFlagPolicy }).status, 'ready', argv.join(' '));
+    }
+  }
+});
+
+test('large valid count clusters do not exceed the argument stack', () => {
+  const cli = createCli({ name: 'app', options: { verbose: { type: 'count', flags: ['-v'] } } });
+  const result = cli.parse({ argv: [`-${'v'.repeat(150_000)}`] });
+  assert.equal(result.status, 'ready');
+  assert.equal(result.optionValues.verbose, 150_000);
+});
+
+
+test('large definition issue lists preserve diagnostics without argument-stack overflow', () => {
+  const flags = Array.from({ length: 150_000 }, (_, index) => `invalid${index}`);
+  const aliases = flags.map((flag) => `${flag} alias`);
+  assert.throws(() => createCli({
+    name: 'app', options: { verbose: { type: 'boolean', flags } },
+    commands: [{ name: 'go', aliases }]
+  }), (error) => {
+    assert.ok(error instanceof CliDefinitionError);
+    const commandIssues = error.issues.filter((issue) => issue.source === 'command');
+    const optionIssues = error.issues.filter((issue) => issue.source === 'option');
+    assert.equal(commandIssues.length, flags.length);
+    assert.equal(optionIssues.length, flags.length);
+    assert.equal(commandIssues[0].alias, aliases[0]);
+    assert.equal(commandIssues.at(-1).alias, aliases.at(-1));
+    assert.equal(optionIssues[0].flag, flags[0]);
+    assert.equal(optionIssues.at(-1).flag, flags.at(-1));
+    return true;
+  });
+});
+
+
+test('large passthrough spans retain every argument in order', () => {
+  const cli = createCli({ name: 'app', acceptsPassthroughArguments: true });
+  const args = Array.from({ length: 150_000 }, (_, index) => `arg${index}`);
+  const result = cli.parse({ argv: ['--', ...args] });
+  assert.equal(result.status, 'ready');
+  assert.deepEqual(result.passthroughArguments, args);
+});
+
+test('terminal unknown parent flags can be collected without guessing later command ownership', () => {
+  const cli = createCli({ name: 'app', commands: [{ name: 'parent', commands: [{ name: 'run' }] }] });
+  for (const [argv, key] of [[['--extra'], 'app'], [['--extra=value'], 'app'], [['parent', '--extra'], 'app parent']]) {
+    const result = cli.parse({ argv, unknownFlagPolicy: 'collect' });
+    assert.equal(result.status, 'ready');
+    assert.equal(result.commandKey, key);
+    assert.equal(result.unknownFlags.length, 1);
+    assert.equal(cli.parse({ argv }).status, 'invalid');
+  }
+  for (const argv of [['--extra', 'parent'], ['parent', '--extra', 'run']]) {
+    const result = cli.parse({ argv, unknownFlagPolicy: 'collect' });
+    assert.equal(result.status, 'invalid');
+    assert.notEqual(result.command?.key, 'app parent run');
+  }
+});
+
+test('scanner and decoder diagnostics contribute each occurrence exactly once', () => {
+  const app = createCli({ name: 'app', options: {
+    token: { type: 'string', flags: ['--token'] },
+    enabled: { type: 'boolean', flags: ['--enabled'] },
+    count: { type: 'integer', flags: ['--count'], multiple: true },
+    required: { type: 'string', flags: ['--required'], required: true }
+  } });
+  for (const [argv, expected] of [
+    [['--required', 'yes', '--token'], ['MISSING_OPTION_VALUE']],
+    [['--required', 'yes', '--enabled=no'], ['UNEXPECTED_OPTION_VALUE']],
+    [['--required', 'yes', '-?'], ['INVALID_FLAG_SYNTAX']],
+    [['--enabled=no', '--count=bad', '--count=bad', '--token'], [
+      'UNEXPECTED_OPTION_VALUE', 'MISSING_OPTION_VALUE',
+      'INVALID_OPTION_VALUE', 'INVALID_OPTION_VALUE', 'MISSING_REQUIRED_OPTION'
+    ]]
+  ]) {
+    const result = app.parse({ argv });
+    assert.equal(result.status, 'invalid');
+    assert.deepEqual(result.diagnostics.map((issue) => issue.code), expected);
+    const invalidValues = result.diagnostics.filter((issue) => issue.code === 'INVALID_OPTION_VALUE');
+    if (invalidValues.length > 0) {
+      assert.deepEqual(invalidValues.map((issue) => issue.argvIndex), [1, 2]);
+      assert.deepEqual(invalidValues.map((issue) => issue.rawValue), ['bad', 'bad']);
+    }
+  }
+});
+
+test('unknown policy applies once alongside lexical and semantic failures', () => {
+  const app = createCli({ name: 'app', options: {
+    count: { type: 'integer', flags: ['--count'], sensitive: true },
+    token: { type: 'string', flags: ['--token'] }
+  } });
+  for (const unknownFlagPolicy of ['error', 'collect']) {
+    for (const [argv, optionCode] of [
+      [['--unknown', '--token'], 'MISSING_OPTION_VALUE'],
+      [['--unknown', '--count=secret'], 'INVALID_OPTION_VALUE']
+    ]) {
+      const result = app.parse({ argv, unknownFlagPolicy });
+      assert.equal(result.status, 'invalid');
+      assert.equal(result.unknownFlags.length, 1);
+      assert.equal(result.diagnostics.filter((issue) => issue.code === optionCode).length, 1);
+      assert.equal(result.diagnostics.filter((issue) => issue.code === 'CLI_UNKNOWN_FLAG').length,
+        unknownFlagPolicy === 'error' ? 1 : 0);
+      assert.equal(result.diagnostics.length, unknownFlagPolicy === 'error' ? 2 : 1);
+      if (optionCode === 'INVALID_OPTION_VALUE') {
+        const issue = result.diagnostics.find((issue) => issue.code === optionCode);
+        assert.equal(issue.sensitive, true);
+        assert.equal(issue.rawValue, 'secret');
+      }
+    }
+  }
+});
+
+test('collect preserves routing uncertainty while controls retain their classification boundary', () => {
+  const app = createCli({ name: 'app', version: '1', commands: [{ name: 'child' }] });
+  for (const unknownFlagPolicy of ['error', 'collect']) {
+    const uncertain = app.parse({ argv: ['--unknown', 'child', '--help'], unknownFlagPolicy });
+    assert.equal(uncertain.status, 'invalid');
+    assert.equal(uncertain.diagnostics.filter((issue) => issue.code === 'CLI_ROUTING_UNCERTAIN').length, 1);
+    assert.equal(uncertain.diagnostics.filter((issue) => issue.code === 'CLI_UNKNOWN_FLAG').length,
+      unknownFlagPolicy === 'error' ? 1 : 0);
+    const known = app.parse({ argv: ['child', '--unknown'], unknownFlagPolicy });
+    assert.equal(known.status, unknownFlagPolicy === 'error' ? 'invalid' : 'ready');
+    assert.equal(known.diagnostics.filter((issue) => issue.code === 'CLI_UNKNOWN_FLAG').length,
+      unknownFlagPolicy === 'error' ? 1 : 0);
+    assert.equal(app.parse({ argv: ['child', '--unknown', '--help'], unknownFlagPolicy }).status, 'help');
+    assert.equal(app.parse({ argv: ['child', '--unknown', '--version'], unknownFlagPolicy }).status, 'version');
+  }
 });

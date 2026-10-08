@@ -6,7 +6,9 @@ import {
 } from '@ismail-elkorchi/cli-core';
 import type { ScannedOption } from 'argv-flags';
 import { runtimeFor } from './definition.ts';
+import { isPlainRecord, readDenseArray } from './data.ts';
 import { inspectCliArgv } from './inspection.ts';
+import { shellCompletionScript } from './shell-completion.ts';
 import type {
   Cli,
   CliCompletion,
@@ -31,7 +33,7 @@ export async function completeCliWords<
   input: ExactCompletionRequest<Request>
 ): Promise<readonly CliCompletion[]> {
   const request = readCompletionRequest(input);
-  const normalized = normalizeRequest(cli, request);
+  const normalized = normalizeRequest(request);
   const runtime = runtimeFor(cli);
   const inspection = inspectCliArgv(cli, normalized.argv);
   const command = findCliCommand(runtime.program, inspection.commandPath);
@@ -45,8 +47,14 @@ export async function completeCliWords<
     options: inspection.options,
     positionalArguments: inspection.positionalArguments,
     passthroughArguments: inspection.passthroughArguments,
-    unknownFlags: inspection.unknownFlags
+    unknownFlags: inspection.unknownFlags,
+    unclassifiedArguments: inspection.unclassifiedArguments,
+    controlArguments: inspection.controlArguments
   });
+
+  if (inspection.unclassifiedArguments.some((argument) => argument.argvIndex < currentIndex)) {
+    return Object.freeze([]);
+  }
 
   if (inspection.doubleDashIndex !== undefined && inspection.doubleDashIndex < currentIndex) {
     if (!command.acceptsPassthroughArguments || request.provideValues === undefined) {
@@ -91,12 +99,18 @@ export async function completeCliWords<
   const specifiedOptions = Object.create(null) as Record<string, boolean>;
   for (const option of command.options) specifiedOptions[option.name] = false;
   for (const option of inspection.options) specifiedOptions[option.option] = true;
-  const coreCandidates = completeCli(runtime.program, {
+  const domainCandidates = completeCli(runtime.program, {
     commandPath: command.path,
     prefix: normalized.current,
     includeHidden: request.includeHidden ?? false,
     specifiedOptions
   }) ?? [];
+  const controlCandidates: CliCompletion[] = Object.entries(runtime.controls)
+    .filter(([name]) => specifiedOptions[name] !== true)
+    .flatMap(([name, option]) => option.flags.filter((flag) => flag.startsWith(normalized.current)).map((flag) =>
+      Object.freeze({ kind: 'flag' as const, value: flag, option: name, setsBoolean: true,
+        ...(option.description === undefined ? {} : { description: option.description }) })));
+  const coreCandidates = [...domainCandidates, ...controlCandidates];
   const positional = activePositional(
     command.path,
     runtime.program,
@@ -158,19 +172,7 @@ export function createCompletionScript<Definition extends CliDefinition>(
   if (typeof completionExecutable !== 'string' || completionExecutable.length === 0) {
     throw new TypeError('Completion executable must be a non-empty string.');
   }
-  const program = shellQuote(cli.name);
-  const executable = shellQuote(completionExecutable);
-  const identifier = shellIdentifier(cli.name);
-  if (shell === 'fish') {
-    return `function __${identifier}_complete\n  set -l words (commandline -opc)\n  set -l current (commandline -ct)\n  ${executable} lines (count $words) $words "$current"\nend\ncomplete -c ${program} -f -a '(__${identifier}_complete)'\n`;
-  }
-  if (shell === 'pwsh') {
-    return `Register-ArgumentCompleter -Native -CommandName ${powerShellQuote(cli.name)} -ScriptBlock {\n  param($wordToComplete, $commandAst, $cursorPosition)\n  $words = @($commandAst.CommandElements | ForEach-Object { if ($_ -is [System.Management.Automation.Language.StringConstantExpressionAst]) { $_.Value } else { $_.Extent.Text } })\n  $current = 0\n  for ($index = 0; $index -lt $commandAst.CommandElements.Count; $index++) {\n    if ($commandAst.CommandElements[$index].Extent.EndOffset -lt $cursorPosition) { $current = $index + 1 }\n  }\n  if ($current -ge $words.Count) { $words += $wordToComplete } else { $words[$current] = $wordToComplete }\n  & ${powerShellQuote(completionExecutable)} lines $current @words\n}\n`;
-  }
-  if (shell === 'zsh') {
-    return `#compdef ${cli.name}\n_${identifier}() {\n  local output\n  local -a request_words candidates\n  request_words=("\${words[@]}")\n  request_words[$CURRENT]="$PREFIX"\n  output="$(${executable} lines "$((CURRENT - 1))" "\${request_words[@]}")"\n  candidates=("\${(@f)output}")\n  compadd -- "\${candidates[@]}"\n}\ncompdef _${identifier} ${program}\n`;
-  }
-  return `_${identifier}() { mapfile -t COMPREPLY < <(${executable} lines "$COMP_CWORD" "\${COMP_WORDS[@]}"); }\ncomplete -F _${identifier} ${program}\n`;
+  return shellCompletionScript(cli.name, shell, completionExecutable);
 }
 
 function readCompletionRequest(input: unknown): CliCompletionRequest {
@@ -213,8 +215,7 @@ function readCompletionRequest(input: unknown): CliCompletionRequest {
   });
 }
 
-function normalizeRequest<Definition extends CliDefinition>(
-  cli: Cli<Definition>,
+function normalizeRequest(
   request: CliCompletionRequest
 ): {
   readonly words: readonly string[];
@@ -222,12 +223,12 @@ function normalizeRequest<Definition extends CliDefinition>(
   readonly argv: readonly string[];
   readonly current: string;
 } {
-  const words = freezeWords(request.words);
+  const words = request.words;
   const cursor = request.cursor ?? Math.max(0, words.length - 1);
   if (!Number.isInteger(cursor) || cursor < 0 || cursor > words.length) {
     throw new RangeError('Completion cursor must identify a word or an empty trailing word.');
   }
-  const start = words[0] === cli.name ? 1 : 0;
+  const start = words.length === 0 ? 0 : 1;
   const current = cursor < words.length ? words[cursor] ?? '' : '';
   const before = words.slice(start, Math.max(start, cursor));
   return {
@@ -242,12 +243,6 @@ function freezeWords(input: unknown): readonly string[] {
   return freezeStringArray(input, 'Completion words');
 }
 
-function isPlainRecord(value: unknown): value is Readonly<Record<PropertyKey, unknown>> {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
 async function provideValues(
   request: CliCompletionRequest,
   context: CliCompletionContext
@@ -257,23 +252,11 @@ async function provideValues(
 }
 
 function freezeStringArray(input: unknown, label: string): readonly string[] {
-  if (!Array.isArray(input)) throw new TypeError(`${label} must be an array of strings.`);
-  const output: string[] = [];
-  for (let index = 0; index < input.length; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(input, index);
-    if (descriptor === undefined || !('value' in descriptor) ||
-        typeof descriptor.value !== 'string') {
-      throw new TypeError(`${label} must be a dense array of strings.`);
-    }
-    output.push(descriptor.value);
-  }
-  if (!Reflect.ownKeys(input).every((property) => property === 'length' || (
-    typeof property === 'string' && /^(?:0|[1-9]\d*)$/u.test(property) &&
-    Number(property) < input.length
-  ))) {
+  const entries = readDenseArray(input);
+  if (entries === undefined || entries.some((entry) => typeof entry !== 'string')) {
     throw new TypeError(`${label} must be a dense array of strings.`);
   }
-  return Object.freeze(output);
+  return Object.freeze(entries) as readonly string[];
 }
 
 function activePositional(
@@ -312,17 +295,4 @@ function mergeValueCandidates(
 
 function uniqueMatching(values: readonly string[], prefix: string): readonly string[] {
   return Object.freeze([...new Set(values.filter((value) => value.startsWith(prefix)))]);
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
-function powerShellQuote(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
-}
-
-function shellIdentifier(value: string): string {
-  const identifier = value.replaceAll(/[^A-Za-z0-9_]/gu, '_');
-  return identifier.length === 0 ? 'cli' : identifier;
 }

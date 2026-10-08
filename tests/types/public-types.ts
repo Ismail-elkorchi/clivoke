@@ -1,6 +1,8 @@
+import process from 'node:process';
 import {
   completeCliWords,
   createCli,
+  createProcessCliHost,
   inspectCliArgv,
   runCliMain,
   type CliDiagnostic,
@@ -249,3 +251,169 @@ createCli({
     }
   }
 });
+
+// Reusable and dynamic definitions retain a usable widened boundary.
+import type { Cli, CliCommandDefinition, CliDefinition } from '../../src/index.ts';
+const dynamicDefinition: CliDefinition = { name: 'dynamic', commands: [{ name: 'run' }] };
+const dynamicResult = createCli(dynamicDefinition).parse();
+if (dynamicResult.status === 'ready') {
+  const dynamicKey: string = dynamicResult.commandKey;
+  void dynamicKey;
+}
+function parseDynamic(cli: Cli) { return cli.parse(); }
+void parseDynamic;
+const dynamicCommands: readonly CliCommandDefinition[] = [{ name: 'dynamic' }];
+const mixedCli = createCli({ name: 'mixed', commands: [{ name: 'fixed' }, ...dynamicCommands] });
+const mixedResult = mixedCli.parse();
+if (mixedResult.status === 'ready') {
+  const mixedKey: string = mixedResult.commandKey;
+  void mixedKey;
+}
+
+const partialDefinition = createCli({ name: 'partial', commands: [
+  { name: 'fixed', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'plugins', commands: dynamicCommands }
+] });
+const partialResult = partialDefinition.parse();
+if (partialResult.status === 'ready' && partialResult.commandKey === 'partial fixed') {
+  const exactCount: number = partialResult.optionValues.count;
+  void exactCount;
+}
+
+// The structural host accepts the actual Node process type.
+createProcessCliHost(process);
+
+// Flat siblings must not spend one recursive instantiation per command.
+const wideCommands = [
+  { name: 'c0', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c1', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c2', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c3', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c4', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c5', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c6', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c7', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c8', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c9', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c10', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c11', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c12', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c13', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c14', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c15', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c16', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c17', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c18', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c19', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c20', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c21', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c22', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c23', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c24', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c25', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c26', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c27', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c28', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c29', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c30', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c31', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c32', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c33', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c34', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c35', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c36', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c37', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c38', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c39', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c40', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c41', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c42', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c43', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c44', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c45', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c46', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c47', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c48', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c49', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c50', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c51', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c52', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c53', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c54', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c55', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c56', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c57', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c58', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+  { name: 'c59', options: { count: { type: 'integer', flags: ['--count'], required: true } } },
+ ] as const;
+const wideCli = createCli({ name: 'wide', commands: wideCommands });
+const wideResult = wideCli.parse();
+if (wideResult.status === 'ready' && wideResult.commandKey === 'wide c59') {
+  const count: number = wideResult.optionValues.count;
+  // @ts-expect-error a sibling command does not add arbitrary options
+  wideResult.optionValues.missing;
+  void count;
+}
+
+const branchA = { name: 'a', options: { count: { type: 'integer', flags: ['--count'], required: true } } } as const;
+const branchB = { name: 'b', options: { label: { type: 'string', flags: ['--label'], required: true } } } as const;
+const unionCommands: readonly [typeof branchA | typeof branchB] = [Math.random() > 0.5 ? branchA : branchB];
+const unionCli = createCli({ name: 'app', commands: unionCommands });
+const unionResult = unionCli.parse();
+if (unionResult.status === 'ready' && unionResult.commandKey === 'app a') {
+  const count: number = unionResult.optionValues.count;
+  // @ts-expect-error options from branch b are not available on branch a
+  unionResult.optionValues.label;
+  // @ts-expect-error branch a has numeric count, not string
+  const text: string = unionResult.optionValues.count;
+  void count;
+  void text;
+}
+if (unionResult.status === 'ready' && unionResult.commandKey === 'app b') {
+  const label: string = unionResult.optionValues.label;
+  // @ts-expect-error options from branch a are not available on branch b
+  unionResult.optionValues.count;
+  void label;
+}
+
+// A known prefix is retained when only the tail is dynamically supplied.
+const prefixedCommands: readonly [typeof branchA, ...CliCommandDefinition[]] = [branchA, ...dynamicCommands];
+const prefixed = createCli({ name: 'prefix', commands: prefixedCommands }).parse();
+if (prefixed.status === 'ready' && prefixed.commandKey === 'prefix a') {
+  // The dynamic tail can overlap a known key, so it must not be asserted numeric.
+  // @ts-expect-error dynamic command options are not necessarily numbers
+  const count: number = prefixed.optionValues.count;
+  void count;
+}
+const prefixedReady = null as unknown as Extract<typeof prefixed, { commandKey: 'prefix a' }>;
+const prefixedCount: number = prefixedReady.optionValues.count;
+// @ts-expect-error the known prefix keeps its original numeric option
+const prefixedText: string = prefixedReady.optionValues.count;
+void prefixedCount;
+void prefixedText;
+
+const widePrefixed = createCli({ name: 'widePrefix', commands: [...wideCommands, ...dynamicCommands] }).parse();
+const widePrefixedReady = null as unknown as Extract<typeof widePrefixed, { commandKey: 'widePrefix c59' }>;
+const widePrefixedCount: number = widePrefixedReady.optionValues.count;
+// @ts-expect-error wide variadic prefixes must preserve exact option types
+const widePrefixedText: string = widePrefixedReady.optionValues.count;
+void widePrefixedCount;
+void widePrefixedText;
+
+// Exported invocation types also accept unions of differently sized tuples.
+import type { CliInvocationSuccess } from '../../src/index.ts';
+type TupleUnion = readonly [typeof branchA] | readonly [typeof branchA, typeof branchB];
+type TupleUnionReady = CliInvocationSuccess<{ readonly name: 'tuple'; readonly commands: TupleUnion }>;
+const tupleUnionB = null as unknown as Extract<TupleUnionReady, { commandKey: 'tuple b' }>;
+const tupleUnionLabel: string = tupleUnionB.optionValues.label;
+// @ts-expect-error tuple union branch b does not acquire branch a options
+const tupleUnionCount: number = tupleUnionB.optionValues.count;
+void tupleUnionLabel;
+void tupleUnionCount;
+
+// Non-slot array metadata cannot manufacture invokable command branches.
+type CommandsWithMetadata = readonly [typeof branchA] & { readonly metadata: typeof branchB };
+type MetadataReady = CliInvocationSuccess<{ readonly name: 'metadata'; readonly commands: CommandsWithMetadata }>;
+type PhantomCommand = Extract<MetadataReady, { commandKey: 'metadata b' }>;
+const noPhantomCommand: [PhantomCommand] extends [never] ? true : false = true;
+void noPhantomCommand;

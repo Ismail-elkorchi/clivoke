@@ -71,8 +71,8 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@ismail-elkorchi/cli-core": "^0.3.0",
-    "argv-flags": "^3.0.0"
+    "@ismail-elkorchi/cli-core": "git+https://github.com/Ismail-elkorchi/cli-core.git#b85398660ea25fdbaa51c7a69458cd10bf985ef4",
+    "argv-flags": "4.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

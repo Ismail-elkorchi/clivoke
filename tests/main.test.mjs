@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   createCli,
+  createProcessCliHost,
+  createDenoCliHost,
   formatCliDiagnostics,
   runCliCompletion,
   runCliMain,
@@ -252,4 +254,160 @@ test('completion JSON lines preserve candidate metadata and embedded newlines', 
     value: 'line\nbreak',
     positional: 'target'
   });
+});
+
+
+test('Deno hosts write every byte and reject stalled or invalid writers', async () => {
+  const chunks = [];
+  const host = createDenoCliHost({ args: [], exitCode: 0,
+    stdout: { async write(bytes) { const part = bytes.slice(0, 2); chunks.push(part); return part.length; } },
+    stderr: { async write(bytes) { return bytes.length; } }
+  });
+  await host.writeStdout('héllo');
+  assert.equal(Buffer.concat(chunks).toString(), 'héllo');
+  for (const count of [0, -1, NaN, 1.5, 99]) {
+    const bad = createDenoCliHost({ args: [], exitCode: 0,
+      stdout: { async write() { return count; } }, stderr: { async write() { return count; } }
+    });
+    await assert.rejects(bad.writeStdout('abc'), /progress/u);
+  }
+});
+
+test('Node host awaits buffered completion and catches asynchronous stream failure', async () => {
+  const { Writable } = await import('node:stream');
+  let finish;
+  const stdout = new Writable({ highWaterMark: 1, write(_chunk, _encoding, callback) { finish = callback; } });
+  const stderr = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  const processLike = { argv: ['node', 'app'], stdout, stderr };
+  const host = createProcessCliHost(processLike);
+  let settled = false;
+  const writing = host.writeStdout('buffered').then(() => { settled = true; return undefined; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  finish();
+  await writing;
+  assert.equal(settled, true);
+  const failure = new Error('broken output');
+  const broken = new Writable({ write(_chunk, _encoding, callback) { setImmediate(() => callback(failure)); } });
+  await assert.rejects(createProcessCliHost({ ...processLike, stdout: broken }).writeStdout('x'), (e) => e === failure);
+});
+
+test('output failures are distinct, observed once, and never retry a handler', async () => {
+  const outputError = new Error('output failed');
+  let calls = 0;
+  const failures = [];
+  const host = { argv: [], async writeStdout() { throw outputError; }, writeStderr() { throw Error('must not report to broken host'); }, setExitCode() {} };
+  await assert.rejects(runCliMain({ cli: createCli({ name: 'app' }), host, context: undefined,
+    handlers: { app() { calls++; return { stdout: 'done' }; } },
+    observeFailure(failure) { failures.push(failure); throw Error('telemetry failed'); }
+  }), (e) => e === outputError);
+  assert.equal(calls, 1);
+  assert.deepEqual(failures, [{ kind: 'output', error: outputError }]);
+});
+
+test('application renderers replace default output using the original classified request', async () => {
+  const app = createCli({ name: 'app', version: '1', options: { json: { type: 'boolean', flags: ['--json'] } } });
+  for (const argv of [['--json', '--help'], ['--json', '--version'], ['--json', '--bad'], ['--json']]) {
+    let stdout = '', stderr = '';
+    const render = (kind) => (_value, presentation) => {
+      assert.equal(presentation.context, 'context');
+      assert.ok(presentation.inspection.options.some((option) => option.option === 'json'));
+      return { stdout: JSON.stringify({ kind }), exitCode: kind === 'failure' ? 7 : 0 };
+    };
+    const code = await runCliMain({ cli: app, context: 'context',
+      host: { argv, writeStdout(s) { stdout += s; }, writeStderr(s) { stderr += s; }, setExitCode() {} },
+      handlers: { app() { throw Error('domain'); } },
+      renderHelp: render('help'), renderVersion: render('version'), renderInvalid: render('invalid'), renderFailure: render('failure')
+    });
+    assert.equal(stderr, '');
+    assert.equal(JSON.parse(stdout).kind, argv[1]?.slice(2) === 'bad' ? 'invalid' : argv[1]?.slice(2) ?? 'failure');
+    assert.equal(code, argv.length === 1 ? 7 : 0);
+  }
+});
+
+test('a reporting failure retains the original handler error', async () => {
+  const original = new Error('domain failure');
+  const reporting = new Error('reporting failed');
+  await assert.rejects(runCliMain({ cli: createCli({ name: 'app' }), context: undefined,
+    host: { argv: [], writeStdout() {}, writeStderr() { throw reporting; }, setExitCode() {} },
+    handlers: { app() { throw original; } }
+  }), (error) => error instanceof AggregateError && error.cause === reporting && error.errors[0] === original && error.errors[1] === reporting);
+});
+
+test('library version output escapes controls while handler output remains untouched', async () => {
+  let stdout = '';
+  const host = { argv: ['--version'], writeStdout(s) { stdout += s; }, writeStderr() {}, setExitCode() {} };
+  await runCliMain({ cli: createCli({ name: 'app', version: '1\u001b[2J' }), host, handlers: {}, context: undefined });
+  assert.equal(stdout.includes('\u001b'), false);
+  assert.match(stdout, /\\u\{001b\}/u);
+});
+
+test('every automatic outcome and warning uses the same output-failure settlement', async () => {
+  const app = createCli({ name: 'app', version: '1', commands: [{ name: 'old', deprecated: true }] });
+  for (const argv of [['--help'], ['--version'], ['missing'], ['old']]) {
+    const original = new Error('delivery');
+    const observed = [];
+    let calls = 0, exitCode;
+    await assert.rejects(runCliMain({ cli: app, context: undefined,
+      host: { argv, async writeStdout() { throw original; }, async writeStderr() { throw original; }, setExitCode(code) { exitCode = code; } },
+      handlers: { app() { calls++; }, 'app old'() { calls++; } },
+      observeFailure(failure) { observed.push(failure); }
+    }), (error) => error === original);
+    assert.deepEqual(observed, [{ kind: 'output', error: original }]);
+    assert.equal(exitCode, 1);
+    assert.equal(calls, 0);
+  }
+});
+
+test('warning renderers cannot silently supply an exit code', async () => {
+  let called = false;
+  await assert.rejects(runCliMain({
+    cli: createCli({ name: 'app', commands: [{ name: 'old', deprecated: true }] }), context: undefined,
+    host: { argv: ['old'], writeStdout() {}, writeStderr() {}, setExitCode() {} },
+    handlers: { 'app old'() { called = true; } },
+    renderWarnings() { return { stderr: 'warning', exitCode: 7 }; }
+  }), /only produce stdout and stderr/u);
+  assert.equal(called, false);
+});
+
+
+test('host writes retain their receiver', async () => {
+  const host = { argv: [], output: '', exitCode: undefined,
+    writeStdout(text) { this.output += text; }, writeStderr(text) { this.output += text; },
+    setExitCode(code) { this.exitCode = code; }
+  };
+  await runCliMain({ cli: createCli({ name: 'app' }), host, context: undefined,
+    handlers: { app() { return { stdout: 'hello', stderr: 'warning' }; } }
+  });
+  assert.equal(host.output, 'hello\nwarning\n');
+  assert.equal(host.exitCode, 0);
+});
+
+
+test('line completion omits terminal format controls while JSONL remains lossless', async () => {
+  const app = createCli({ name: 'app', positionals: [{ name: 'target', required: false }] });
+  const candidates = ['safe', 'bidi\u202econtrol', 'unicode\u2028line'];
+  let stdout = '';
+  const host = { argv: ['lines', '1', 'app', ''], writeStdout(text) { stdout += text; }, writeStderr() {}, setExitCode() {} };
+  await runCliCompletion({ cli: app, host, provideValues() { return candidates; } });
+  assert.match(stdout, /safe/u);
+  assert.doesNotMatch(stdout, /bidi|unicode/u);
+  stdout = '';
+  await runCliCompletion({ cli: app, host, argv: ['jsonl', '1', 'app', ''], provideValues() { return candidates; } });
+  assert.deepEqual(stdout.trimEnd().split('\n').map((line) => JSON.parse(line)).filter((candidate) => candidate.kind === 'positional-value').map((candidate) => candidate.value), candidates);
+});
+
+test('leading help never dispatches a domain handler with passthrough', async () => {
+  const cli = createCli({ name: 'app', commands: [{ name: 'deploy', acceptsPassthroughArguments: true }] });
+  let calls = 0;
+  const writes = { stdout: '', stderr: '', exitCode: undefined };
+  const host = {
+    argv: ['help', 'deploy', '--', '--force'],
+    writeStdout(text) { writes.stdout += text; },
+    writeStderr(text) { writes.stderr += text; },
+    setExitCode(code) { writes.exitCode = code; }
+  };
+  await runCliMain({ cli, host, handlers: { 'app deploy': () => { calls += 1; } }, context: undefined });
+  assert.equal(calls, 0);
+  assert.match(writes.stdout, /^Usage: app deploy/u);
 });

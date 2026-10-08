@@ -8,12 +8,31 @@ export function createCliHelp<Definition extends CliDefinition>(
   cli: Cli<Definition>,
   commandPath: readonly string[] = []
 ): CliHelp | undefined {
-  return createCoreCliHelp(runtimeFor(cli).program, commandPath);
+  const runtime = runtimeFor(cli);
+  const help = createCoreCliHelp(runtime.program, commandPath);
+  if (help === undefined) return undefined;
+  const prefix = [runtime.program.name, ...help.command.path].join(' ');
+  const controls: CliHelp['options'] = Object.freeze(Object.entries(runtime.controls).map(([name, option]) =>
+    Object.freeze({
+      name, flags: option.flags, falseFlags: Object.freeze([]), valueMode: 'none' as const,
+      required: false, multiple: false, repeat: 'error' as const, hasDefault: false,
+      valueCandidates: Object.freeze([]), definedAt: Object.freeze([]),
+      ...(option.description === undefined ? {} : { description: option.description })
+    })));
+  return Object.freeze({
+    ...help,
+    usage: help.options.length === 0 ? `${prefix} [options]${help.usage.slice(prefix.length)}` : help.usage,
+    options: Object.freeze([
+      ...help.options.filter((option) => option.definedAt.length === 0),
+      ...controls,
+      ...help.options.filter((option) => option.definedAt.length > 0)
+    ])
+  });
 }
 
 /** Formats renderer-neutral help as concise terminal text. */
 export function formatCliHelp(help: CliHelp): string {
-  const lines = [`Usage: ${help.usage}`];
+  const lines = [`Usage: ${sanitizeTerminalText(help.usage)}`];
   if (help.command.description !== undefined) {
     lines.push('', sanitizeTerminalText(help.command.description));
   }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,11 +27,19 @@ test('the packed package works offline in Node, Deno, and Bun', async (context) 
   await run('npm', [
     'install',
     '--offline',
-    '--ignore-scripts',
     '--no-audit',
     '--no-fund',
     ...archives.map((archive) => join(workspace, archive))
   ], workspace);
+  // Git dependencies may legitimately be nested alongside explicit packed
+  // dependencies. Verify the actual consumer resolution, not a top-level
+  // fallback whose declarations could hide an unprepared nested package.
+  const requireFromCli = createRequire(join(workspace, 'node_modules', 'clivoke', 'package.json'));
+  for (const dependency of ['@ismail-elkorchi/cli-core', 'argv-flags']) {
+    const entry = requireFromCli.resolve(dependency);
+    await access(entry);
+    await access(entry.replace(/\.js$/u, '.d.ts'));
+  }
   await writeFile(join(workspace, 'consumer.mjs'), source);
   await writeFile(join(workspace, 'consumer.ts'), typeSource);
   await execFileAsync(process.execPath, [
@@ -116,12 +125,70 @@ import { createCli } from 'clivoke';
 const cli = createCli({ name: 'ship', commands: [{ name: 'deploy', options: { region: { type: 'string', flags: ['--region'], required: true } } }] });
 const result = cli.parse({ argv: ['deploy', '--region', 'eu'] });
 if (result.status !== 'ready') throw new Error('parse failed');
+const helpCli = createCli({ name: 'app', commands: [{ name: 'deploy', acceptsPassthroughArguments: true }] });
+for (const argv of [['help', 'deploy', '--', '--force'], ['help', 'deploy', '--unknown']]) {
+  if (helpCli.parse({ argv, unknownFlagPolicy: 'collect' }).status !== 'help') {
+    throw new Error('leading help escaped control ownership');
+  }
+}
+const countCli = createCli({ name: 'count', options: { verbose: { type: 'count', flags: ['-v'] } } });
+const large = countCli.parse({ argv: ['-' + 'v'.repeat(150_000)] });
+if (large.status !== 'ready' || large.optionValues.verbose !== 150_000) throw new Error('large cluster failed');
+const invalidCli = createCli({ name: 'invalid', options: {
+  token: { type: 'string', flags: ['--token'] },
+  count: { type: 'integer', flags: ['--count'] }
+} });
+for (const unknownFlagPolicy of ['error', 'collect']) {
+  const invalid = invalidCli.parse({ argv: ['--unknown', '--count=bad', '--token'], unknownFlagPolicy });
+  const codes = invalid.diagnostics.map((issue) => issue.code).sort();
+  const expected = ['INVALID_OPTION_VALUE', 'MISSING_OPTION_VALUE'];
+  if (unknownFlagPolicy === 'error') expected.push('CLI_UNKNOWN_FLAG');
+  if (invalid.status !== 'invalid' || JSON.stringify(codes) !== JSON.stringify(expected.sort())) {
+    throw new Error('scanner, decoder, and unknown policy lost diagnostic ownership');
+  }
+}
 console.log(JSON.stringify({ region: result.optionValues.region, command: result.command.key }));
 `;
 
+const wideCommands = Array.from({ length: 60 }, (_, index) =>
+  `{ name: 'c${index}', options: { count: { type: 'integer', flags: ['--count'], required: true } } }`
+).join(',');
+
 const typeSource = `
-import { createCli } from 'clivoke';
+import { createCli, type CliCommandDefinition } from 'clivoke';
 const cli = createCli({ name: 'ship', options: { count: { type: 'count', flags: ['-v'] } } });
 const result = cli.parse({ argv: [] });
-if (result.status === 'ready') { const count: number = result.optionValues.count; void count; }
+if (result.status === 'ready') {
+  const count: number = result.optionValues.count;
+  const command: 'ship' = result.commandKey;
+  // @ts-expect-error packed declarations must not silently degrade to any
+  const invalid: string = result.optionValues.count;
+  void count; void command; void invalid;
+}
+
+const wide = createCli({ name: 'wide', commands: [${wideCommands}] }).parse();
+if (wide.status === 'ready' && wide.commandKey === 'wide c59') {
+  const count: number = wide.optionValues.count;
+  // @ts-expect-error packed wide definitions must retain option types
+  const invalid: string = wide.optionValues.count;
+  void count; void invalid;
+}
+const a = { name: 'a', options: { count: { type: 'integer', flags: ['--count'], required: true } } } as const;
+const b = { name: 'b', options: { label: { type: 'string', flags: ['--label'], required: true } } } as const;
+const commands: readonly [typeof a | typeof b] = [a];
+const union = createCli({ name: 'app', commands }).parse();
+if (union.status === 'ready' && union.commandKey === 'app a') {
+  const count: number = union.optionValues.count;
+  // @ts-expect-error packed union definitions must retain branch correlation
+  union.optionValues.label;
+  void count;
+}
+
+const dynamic: readonly CliCommandDefinition[] = [];
+const prefixed = createCli({ name: 'prefix', commands: [${wideCommands}, ...dynamic] }).parse();
+const exact = null as unknown as Extract<typeof prefixed, { commandKey: 'prefix c59' }>;
+const exactCount: number = exact.optionValues.count;
+// @ts-expect-error packed variadic prefixes must retain their exact branch
+const exactText: string = exact.optionValues.count;
+void exactCount; void exactText;
 `;

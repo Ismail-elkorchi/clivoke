@@ -3,19 +3,20 @@ import {
   createCliInvocation as createCoreInvocation,
   defineCli as defineCoreCli,
   type CliCommandDefinition as CoreCommandDefinition,
-  type CliCoreDiagnostic,
+  type CliCommandRoute,
   type CliDefinition as CoreDefinition,
   type CliInvocationResult as CoreInvocationResult,
   type CliOptionDefinition as CoreOptionDefinition,
   type CliProgram,
-  findCliCommandChildren,
   type StructuredInvocationInput as CoreStructuredInvocationInput
 } from '@ismail-elkorchi/cli-core';
 import {
   DefinitionError as ArgvDefinitionError,
+  composeParsers,
   type ValueType
 } from 'argv-flags';
 import { CliDefinitionError } from './definition-error.ts';
+import { isPlainRecord, ownDataValue, readDenseArray, type PlainRecord } from './data.ts';
 import {
   compileOptionParser,
   createArgvBinder,
@@ -23,6 +24,7 @@ import {
 } from './option-binder.ts';
 import type {
   Cli,
+  CliArgvInspection,
   CliBooleanOptionDefinition,
   CliCommandDefinition,
   CliCountOptionDefinition,
@@ -148,8 +150,12 @@ type ExactDefinition<Definition extends CliDefinition> = Definition & Record<
 
 export interface CliRuntime {
   readonly program: CliProgram;
-  readonly invocationParser: ReturnType<typeof createArgvBinder>;
-  readonly optionParsers: ReadonlyMap<string, RuntimeParser>;
+  readonly controls: CliOptionDefinitions;
+  readonly inspect: (argv: readonly string[]) => CliArgvInspection;
+  readonly parseDetailed: (input?: CliParseInput) => {
+    readonly result: CliParseResult<CliDefinition>;
+    readonly inspection: CliArgvInspection;
+  };
 }
 
 const runtimes = new WeakMap<object, CliRuntime>();
@@ -160,88 +166,85 @@ export function createCli<const Definition extends CliDefinition>(
 ): Cli<Definition> {
   const snapshot = snapshotDefinition(input);
   const issues = [...snapshot.issues];
-  let structuredProgram: CliProgram | undefined;
-
+  let program: CliProgram | undefined;
+  const declarations = new Map<string, RuntimeParser>();
+  const declaredSensitive = new Map<string, ReadonlySet<string>>();
   if (snapshot.definition !== undefined) {
     try {
-      structuredProgram = defineCoreCli(toCoreDefinition(snapshot.definition, false));
+      program = defineCoreCli(toCoreDefinition(snapshot.definition));
     } catch (error) {
       if (!(error instanceof CoreDefinitionError)) throw error;
-      issues.push(...error.issues.map((issue) => Object.freeze({
-        ...issue,
-        source: 'command' as const
-      })));
+      for (const issue of error.issues) {
+        issues.push(Object.freeze({ ...issue, source: 'command' as const }));
+      }
     }
-
     for (const scope of declaredOptionScopes(snapshot.definition)) {
       try {
-        compileOptionParser(scope.options);
+        declarations.set(scope.key, compileOptionParser(scope.options));
+        declaredSensitive.set(scope.key, sensitiveOptionNames(scope.options));
       } catch (error) {
         if (!(error instanceof ArgvDefinitionError)) throw error;
-        issues.push(...error.issues.map((issue) => Object.freeze({
-          ...issue,
-          source: 'option' as const,
-          commandPath: scope.path
-        })));
+        for (const issue of error.issues) {
+          issues.push(Object.freeze({ ...issue, source: 'option' as const, commandPath: scope.path }));
+        }
       }
     }
   }
-
-  if (issues.length > 0 || structuredProgram === undefined || snapshot.definition === undefined) {
+  if (issues.length > 0 || program === undefined || snapshot.definition === undefined) {
     throw new CliDefinitionError(issues);
   }
-
   const definition = snapshot.definition;
-  const program = defineCoreCli(toCoreDefinition(definition, true));
-  const controlNames = new Set(Object.keys(controlOptions(definition.version)));
-
+  const domain = program;
+  const controls = controlOptions(definition.version);
+  const controlNames = new Set(Object.keys(controls));
+  const controlParser = compileOptionParser(controls);
   const optionParsers = new Map<string, RuntimeParser>();
   const sensitiveOptions = new Map<string, ReadonlySet<string>>();
-  for (const scope of effectiveOptionScopes(snapshot.definition)) {
-    optionParsers.set(scope.key, compileOptionParser(scope.options));
-    sensitiveOptions.set(scope.key, sensitiveOptionNames(scope.options));
+  for (const scope of domain.commands) {
+    const inherited = [controlParser];
+    const sensitive = new Set<string>();
+    for (let depth = 0; depth <= scope.path.length; depth += 1) {
+      const key = [definition.name, ...scope.path.slice(0, depth)].join(' ');
+      const declaration = declarations.get(key);
+      if (declaration === undefined) throw new TypeError(`Missing option declarations for ${key}.`);
+      inherited.push(declaration);
+      for (const name of declaredSensitive.get(key) ?? []) sensitive.add(name);
+    }
+    optionParsers.set(scope.key, composeParsers(inherited));
+    sensitiveOptions.set(scope.key, sensitive);
   }
-  const invocationParser = createArgvBinder(optionParsers);
-  const translate = (
-    invocation: CoreInvocationResult,
-    unknownFlagPolicy: 'error' | 'collect' = 'error'
-  ): CliInvocationResult<Definition> =>
-    translateInvocation(
-      invocation,
-      sensitiveOptions,
-      unknownFlagPolicy,
-      controlNames
-    ) as CliInvocationResult<Definition>;
+  const invocationParser = createArgvBinder(optionParsers, controlNames);
+  const translate = (invocation: CoreInvocationResult) =>
+    translateInvocation(invocation, sensitiveOptions) as CliInvocationResult<Definition>;
+  const inspect = (input: readonly string[]): CliArgvInspection => {
+    const argv = readParseInput({ argv: input }).argv ?? [];
+    return invocationParser.inspect(invocationParser.route(domain, { argv }));
+  };
+  const parseDetailed = (parseInput?: CliParseInput) => {
+    const settings = readParseInput(parseInput);
+    const unknownFlagPolicy = settings.unknownFlagPolicy ?? 'error';
+    const argv = settings.argv ?? Object.freeze([]);
+    const route = invocationParser.route(domain, { argv });
+    const inspection = invocationParser.inspect(route);
+    const helpCommand = findHelpCommandAction(route, inspection);
+    const action = helpCommand ?? (argv.length === 0 && !domain.root.invokable
+      ? Object.freeze({ status: 'help' as const, commandPath: Object.freeze([]) })
+      : findControlAction(inspection, definition.version));
+    const result = action ?? translate(invocationParser.bind(route, { unknownFlagPolicy }));
+    return Object.freeze({ result, inspection });
+  };
   const cli: Cli<Definition> = Object.freeze({
-    name: program.name,
+    name: domain.name,
     parse(parseInput?: CliParseInput): CliParseResult<Definition> {
-      const settings = readParseInput(parseInput);
-      const unknownFlagPolicy = settings.unknownFlagPolicy ?? 'error';
-      const argv = settings.argv ?? Object.freeze([]);
-      const helpCommand = findHelpCommandAction(program, optionParsers, argv);
-      if (helpCommand !== undefined) return helpCommand;
-      if (argv.length === 0 && !program.root.invokable) {
-        return Object.freeze({ status: 'help', commandPath: Object.freeze([]) });
-      }
-      const invocation = invocationParser.parse(program, {
-        argv,
-        unknownFlagPolicy
-      });
-      const action = findControlAction(
-        optionParsers,
-        invocation.command?.key ?? program.name,
-        invocation.command?.path ?? Object.freeze([]),
-        argv,
-        definition.version
-      );
-      return action ?? translate(invocation, unknownFlagPolicy);
+      return parseDetailed(parseInput).result as CliParseResult<Definition>;
     },
     invoke(structuredInput: CliStructuredInvocationInput<Definition>): CliInvocationResult<Definition> {
       const coreInput: CoreStructuredInvocationInput = structuredInput;
-      return translate(createCoreInvocation(structuredProgram, coreInput));
+      return translate(createCoreInvocation(domain, coreInput));
     }
   });
-  runtimes.set(cli, Object.freeze({ program, invocationParser, optionParsers }));
+  runtimes.set(cli, Object.freeze({ program: domain, controls, inspect,
+    parseDetailed: parseDetailed as CliRuntime['parseDetailed'] }));
   return cli;
 }
 
@@ -483,8 +486,7 @@ function snapshotOption(
       continue;
     }
     let value: unknown = descriptor.value;
-    if (property === 'flags' || property === 'falseFlags' ||
-        (property === 'default' && Array.isArray(value))) {
+    if (property === 'flags' || property === 'falseFlags') {
       const entries = readDenseArray(value);
       if (entries === undefined) {
         addInvalidIssue(issues, path, `Option property ${String(property)} must be a dense array.`);
@@ -493,6 +495,11 @@ function snapshotOption(
       value = Object.freeze(entries);
     }
     output[property] = value;
+  }
+  if (output['multiple'] === true && Array.isArray(output['default'])) {
+    const entries = readDenseArray(output['default']);
+    if (entries === undefined) addInvalidIssue(issues, path, 'Multiple defaults must be a dense array.');
+    else output['default'] = Object.freeze(entries);
   }
   validateOptionPresentation(output, path, issues);
   return Object.freeze(output) as CliOptionDefinitions[string];
@@ -505,6 +512,9 @@ function validateOptionPresentation(
 ): void {
   const type = option['type'];
   const valueTaking = type !== 'boolean' && type !== 'count';
+  if (option['sensitive'] !== undefined && typeof option['sensitive'] !== 'boolean') {
+    addInvalidIssue(issues, path, 'Option sensitivity must be a boolean.');
+  }
   if (!valueTaking && (
     Object.hasOwn(option, 'valueLabel') ||
     Object.hasOwn(option, 'valueDescription') ||
@@ -622,35 +632,6 @@ function addInvalidIssue(
   });
 }
 
-type PlainRecord = Readonly<Record<PropertyKey, unknown>>;
-
-function isPlainRecord(value: unknown): value is PlainRecord {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const prototype: unknown = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-}
-
-function ownDataValue(value: PlainRecord, property: PropertyKey): unknown {
-  const descriptor = Object.getOwnPropertyDescriptor(value, property);
-  return descriptor !== undefined && 'value' in descriptor ? descriptor.value : undefined;
-}
-
-function readDenseArray(value: unknown): readonly unknown[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const entries: unknown[] = [];
-  for (let index = 0; index < value.length; index += 1) {
-    const descriptor = Object.getOwnPropertyDescriptor(value, index);
-    if (descriptor === undefined || !('value' in descriptor)) return undefined;
-    entries.push(descriptor.value);
-  }
-  if (!Reflect.ownKeys(value).every((property) =>
-    property === 'length' ||
-    (typeof property === 'string' && /^(?:0|[1-9]\d*)$/u.test(property) && Number(property) < value.length))) {
-    return undefined;
-  }
-  return entries;
-}
-
 function readParseInput(input: unknown): CliParseInput {
   if (input === undefined) return Object.freeze({});
   if (!isPlainRecord(input)) throw new TypeError('CLI parse input must be a plain object.');
@@ -682,17 +663,12 @@ function readParseInput(input: unknown): CliParseInput {
   return Object.freeze(output);
 }
 
-function toCoreDefinition(
-  definition: CliDefinition,
-  includeControls: boolean
-): CoreDefinition {
+function toCoreDefinition(definition: CliDefinition): CoreDefinition {
   return {
     name: definition.name,
     ...(definition.description === undefined ? {} : { description: definition.description }),
     ...(definition.examples === undefined ? {} : { examples: definition.examples }),
-    options: optionPresentations(includeControls
-      ? mergeOptionMaps(definition.options ?? {}, controlOptions(definition.version))
-      : definition.options ?? {}),
+    options: optionPresentations(definition.options ?? {}),
     ...(definition.positionals === undefined ? {} : { positionals: definition.positionals }),
     commands: (definition.commands ?? []).map(toCoreCommand),
     ...(definition.invokable === undefined ? {} : { invokable: definition.invokable }),
@@ -760,12 +736,12 @@ function optionPresentation(
   const structuralChoices = typeof definition.type === 'object' && definition.type !== null
     ? structuralDataValue(definition.type, 'choices')
     : undefined;
-  const choices = readStringArray(structuralChoices);
+  const choices = definition.sensitive === true ? undefined : readStringArray(structuralChoices);
   const multiple = 'multiple' in definition && definition.multiple === true;
   const hasDefault = (multiple && definition.required !== true) ||
     Object.hasOwn(definition, 'default');
   const defaultLabel = definition.defaultLabel ??
-    (hasDefault ? formatDefault(definition.default) : undefined);
+    (hasDefault && definition.sensitive !== true ? formatDefault(definition.default) : undefined);
   const valuePresentation = {
     ...common,
     kind: 'value' as const,
@@ -868,49 +844,6 @@ function collectDeclaredScopes(
   }
 }
 
-function effectiveOptionScopes(definition: CliDefinition): readonly OptionScope[] {
-  const globalOptions = mergeOptionMaps(
-    definition.options ?? Object.freeze({}),
-    controlOptions(definition.version)
-  );
-  const scopes: OptionScope[] = [{
-    key: definition.name,
-    path: Object.freeze([]),
-    options: freezeOptionMap(globalOptions)
-  }];
-  collectEffectiveScopes(definition.name, definition.commands ?? [], [], globalOptions, scopes);
-  return Object.freeze(scopes);
-}
-
-function collectEffectiveScopes(
-  programName: string,
-  commands: readonly CliCommandDefinition[],
-  parentPath: readonly string[],
-  inheritedOptions: CliOptionDefinitions,
-  scopes: OptionScope[]
-): void {
-  for (const command of commands) {
-    const path = Object.freeze([...parentPath, command.name]);
-    const options = mergeOptionMaps(inheritedOptions, command.options ?? Object.freeze({}));
-    scopes.push({ key: [programName, ...path].join(' '), path, options });
-    collectEffectiveScopes(programName, command.commands ?? [], path, options, scopes);
-  }
-}
-
-function mergeOptionMaps(
-  inherited: CliOptionDefinitions,
-  local: CliOptionDefinitions
-): CliOptionDefinitions {
-  const result = Object.create(null) as Record<string, CliOptionDefinitions[string]>;
-  for (const [name, definition] of Object.entries(inherited)) result[name] = definition;
-  for (const [name, definition] of Object.entries(local)) result[name] = definition;
-  return Object.freeze(result);
-}
-
-function freezeOptionMap(options: CliOptionDefinitions): CliOptionDefinitions {
-  return mergeOptionMaps(Object.freeze({}), options);
-}
-
 function sensitiveOptionNames(options: CliOptionDefinitions): ReadonlySet<string> {
   return new Set(Object.entries(options)
     .filter(([, definition]) => definition.type !== 'boolean' && definition.type !== 'count' &&
@@ -922,13 +855,13 @@ function controlOptions(version: string | undefined): CliOptionDefinitions {
   const options = Object.create(null) as Record<string, CliOptionDefinitions[string]>;
   options['help'] = Object.freeze({
     type: 'boolean',
-    flags: ['-h', '--help'] as const,
+    flags: Object.freeze(['-h', '--help'] as const),
     description: 'Show help.'
   });
   if (version !== undefined) {
     options['version'] = Object.freeze({
       type: 'boolean',
-      flags: ['--version'] as const,
+      flags: Object.freeze(['--version'] as const),
       description: 'Show the version.'
     });
   }
@@ -936,19 +869,13 @@ function controlOptions(version: string | undefined): CliOptionDefinitions {
 }
 
 function findControlAction(
-  parsers: ReadonlyMap<string, RuntimeParser>,
-  commandKey: string,
-  commandPath: readonly string[],
-  argv: readonly string[],
+  inspection: CliArgvInspection,
   version: string | undefined
 ): CliHelpRequest | CliVersionRequest | undefined {
-  const parser = parsers.get(commandKey);
-  if (parser === undefined) throw new TypeError(`Missing option parser for command ${commandKey}.`);
-  const scan = parser.scan({ argv, flagPlacement: 'interspersed' });
-  const control = scan.options.find((option) =>
+  const control = inspection.options.find((option) =>
     option.state === 'boolean' && (option.option === 'help' || option.option === 'version'));
   if (control?.option === 'help') {
-    return Object.freeze({ status: 'help', commandPath: Object.freeze([...commandPath]) });
+    return Object.freeze({ status: 'help', commandPath: inspection.commandPath });
   }
   if (control?.option === 'version' && version !== undefined) {
     return Object.freeze({ status: 'version', version });
@@ -957,50 +884,38 @@ function findControlAction(
 }
 
 function findHelpCommandAction(
-  program: CliProgram,
-  parsers: ReadonlyMap<string, RuntimeParser>,
-  argv: readonly string[]
+  route: CliCommandRoute,
+  inspection: CliArgvInspection
 ): CliHelpRequest | CliInvocationFailure | undefined {
-  const parser = parsers.get(program.name);
-  if (parser === undefined) throw new TypeError(`Missing option parser for command ${program.name}.`);
-  const scan = parser.scan({ argv, flagPlacement: 'interspersed' });
-  if (scan.issues.length > 0 || scan.unknownFlags.length > 0 ||
-      scan.afterDoubleDash.length > 0 || scan.arguments[0]?.value !== 'help') {
-    return undefined;
+  if (inspection.controlArguments.length === 0) return undefined;
+  // A recognized help command owns this invocation, just like --help. Trailing
+  // options, malformed input, or passthrough must never restore domain dispatch.
+  const extra = inspection.positionalArguments[0];
+  if (extra !== undefined) {
+    return Object.freeze({
+      status: 'invalid',
+      source: Object.freeze({ kind: 'argv', argv: inspection.argv }),
+      command: route.command,
+      diagnostics: Object.freeze([Object.freeze({
+        source: 'command', code: 'CLI_UNKNOWN_COMMAND', severity: 'error',
+        message: `Unknown command: ${extra.value}.`, token: extra.value,
+        argvIndex: extra.argvIndex, commandPath: route.command.path
+      })]),
+      unknownFlags: Object.freeze([])
+    });
   }
-  let command = program.root;
-  for (const argument of scan.arguments.slice(1)) {
-    const child = findCliCommandChildren(program, command).find((candidate) =>
-      candidate.name === argument.value ||
-      candidate.aliases.some((alias) => alias.name === argument.value));
-    if (child === undefined) {
-      return Object.freeze({
-        status: 'invalid',
-        source: Object.freeze({ kind: 'argv', argv }),
-        command,
-        diagnostics: Object.freeze([Object.freeze({
-          source: 'command',
-          code: 'CLI_UNKNOWN_COMMAND',
-          severity: 'error',
-          message: `Unknown command: ${argument.value}.`,
-          token: argument.value,
-          argvIndex: argument.argvIndex,
-          commandPath: command.path
-        })]),
-        unknownFlags: Object.freeze([])
-      });
-    }
-    command = child;
-  }
-  return Object.freeze({ status: 'help', commandPath: command.path });
+  return Object.freeze({ status: 'help', commandPath: route.command.path });
 }
 
 function formatDefault(value: unknown): string | undefined {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  if (Array.isArray(value) && value.every((entry) =>
-    typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean')) {
-    return value.join(', ');
+  if (Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype) {
+    const entries = readDenseArray(value);
+    if (entries !== undefined && entries.every((entry) =>
+      typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean')) {
+      return entries.join(', ');
+    }
   }
   return undefined;
 }
@@ -1013,9 +928,7 @@ type TranslatedInvocation = CoreInvocationResult extends infer Invocation
 
 function translateInvocation(
   invocation: CoreInvocationResult,
-  sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>,
-  unknownFlagPolicy: 'error' | 'collect',
-  controlNames: ReadonlySet<string>
+  sensitiveOptions: ReadonlyMap<string, ReadonlySet<string>>
 ): TranslatedInvocation {
   const commandSensitiveOptions = invocation.command === undefined
     ? undefined
@@ -1036,50 +949,5 @@ function translateInvocation(
         : {})
     }) as CliOptionDiagnostic;
   });
-  if (unknownFlagPolicy === 'error') {
-    for (const flag of invocation.unknownFlags) {
-      const alreadyReported = diagnostics.some((diagnostic) =>
-        diagnostic.code === 'CLI_UNKNOWN_FLAG' &&
-        'argvIndex' in diagnostic && diagnostic.argvIndex === flag.argvIndex &&
-        'flag' in diagnostic && diagnostic.flag === flag.flag);
-      if (!alreadyReported) diagnostics.push(unknownFlagDiagnostic(flag));
-    }
-  }
-  if (invocation.status === 'ready') {
-    return Object.freeze({
-      ...invocation,
-      optionValues: withoutControlProperties(invocation.optionValues, controlNames),
-      specifiedOptions: withoutControlProperties(invocation.specifiedOptions, controlNames),
-      diagnostics: Object.freeze(diagnostics)
-    });
-  }
   return Object.freeze({ ...invocation, diagnostics: Object.freeze(diagnostics) });
-}
-
-function withoutControlProperties<Value>(
-  input: Readonly<Record<string, Value>>,
-  controlNames: ReadonlySet<string>
-): Readonly<Record<string, Value>> {
-  const output = Object.create(null) as Record<string, Value>;
-  for (const [name, value] of Object.entries(input)) {
-    if (!controlNames.has(name)) output[name] = value;
-  }
-  return Object.freeze(output);
-}
-
-function unknownFlagDiagnostic(
-  flag: CoreInvocationResult['unknownFlags'][number]
-): CliCoreDiagnostic {
-  return Object.freeze({
-    source: 'invocation',
-    code: 'CLI_UNKNOWN_FLAG',
-    severity: 'error',
-    message: `Unknown flag: ${flag.flag}.`,
-    flag: flag.flag,
-    argvElement: flag.argvElement,
-    argvIndex: flag.argvIndex,
-    ...(flag.offset === undefined ? {} : { offset: flag.offset }),
-    ...(flag.inlineValue === undefined ? {} : { inlineValue: flag.inlineValue }),
-    ...(flag.suggestions === undefined ? {} : { suggestions: flag.suggestions })
-  });
 }

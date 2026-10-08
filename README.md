@@ -106,7 +106,9 @@ const invocation = cli.invoke({
 ```
 
 The input and result narrow by `commandPath` and use the same required-option,
-positional, and passthrough rules as argv parsing.
+positional, and passthrough rules as argv parsing. This is a trusted decoded-value
+boundary: adapters must validate their domain values before calling `invoke()`;
+Clivoke does not run argv value codecs on this input.
 
 ## Run commands
 
@@ -128,7 +130,21 @@ await runCliMain({
 Handler keys are restricted to invokable canonical command keys, and every
 handler receives its command's exact invocation type. `runCliMain()` applies
 handler output through the supplied host and sets the exit code.
-`createDenoCliHost(Deno)` provides the equivalent Deno host.
+`createDenoCliHost(Deno)` provides the equivalent Deno host. Both hosts await
+complete output delivery. Output failures are observed as `kind: "output"` and
+propagate separately from handler failures; handlers are never retried.
+
+Applications can replace the default presentation policy with `renderHelp`,
+`renderVersion`, `renderInvalid`, `renderWarnings`, and `renderFailure`. Each
+callback receives its corresponding value and a presentation object containing
+`cli`, `context`, `result`, and the same grammar-aware `inspection` used by the
+parse. Renderers return `CliMainOutput`, synchronously or asynchronously;
+`renderWarnings` returns only `stdout` and `stderr`, never an exit code.
+`renderFailure` centrally maps application errors to output and exit codes,
+replacing the safe default message. `observeFailure` remains telemetry only.
+Applications retain ownership of JSON schemas, domain exit codes, progress,
+locks, and cancellation. They can also continue to orchestrate `parse()` and
+handlers directly.
 
 ## Help and completion
 
@@ -150,17 +166,28 @@ finite choices, and positional metadata. Unknown command paths return
 and version as distinct successful actions before required invocation values
 are enforced, while still respecting option values and `--`.
 
-Completion distinguishes command names, flags, option values, positional
-slots, and post-`--` input. Finite choices are suggested automatically.
+Completion requests use complete logical shell words, including the executable
+as the first word; the executable may be a path. Completion distinguishes command
+names, flags, option values, positional slots, and post-`--` input. Finite choices are suggested automatically.
 Asynchronous value providers receive the command path and an immutable partial
 invocation, enabling context-aware option, positional, and passthrough values.
 
 Use `inspectCliArgv(cli, argv)` when application policy must detect a flag on
 help, version, or invalid invocations. It returns the command path, recognized
 option occurrences, positional and passthrough arguments, and unknown flags
-without decoding values or creating a partial successful invocation. Because
+without decoding values or creating a partial successful invocation. Uncertain
+syntax remains in `unclassifiedArguments`; inspection does not reinterpret its
+suffix using a guessed command scope. Built-in help words are reported in
+`controlArguments`. Because
 it uses the configured grammar, an argv element such as `--json` is not
 misclassified when it is the value of another option.
+
+Unknown flags are errors by default. `unknownFlagPolicy: "collect"` retains them
+in inspection and invocation results without adding `CLI_UNKNOWN_FLAG` errors,
+even when an option value is invalid. It does not resolve an uncertain command
+route: an unknown flag before command selection still produces
+`CLI_ROUTING_UNCERTAIN`, and its suffix remains unclassified. Lexical and value
+diagnostics each appear once, with their original locations.
 
 `createCompletionScript()` generates Bash, Zsh, Fish, or PowerShell glue for a
 dedicated companion executable, named `<program>-complete` by default.
@@ -168,15 +195,36 @@ dedicated companion executable, named `<program>-complete` by default.
 output. JSON lines retain candidate metadata and safely represent values that
 contain newlines.
 
+The generated scripts normalize quoted words and cursor prefixes, and insert
+candidate values as literal shell arguments. Bash also joins its `=` and `:`
+wordbreak fragments and uses the command-line cursor position rather than `COMP_CWORD`.
+All adapters have a literal-word contract: computed variables, substitutions,
+globbing, and redirection-dependent argument vectors are not supported. The
+adapters never evaluate input to resolve those expressions. PowerShell uses its
+native parser for literal words and declines nodes spanning multiple native
+arguments, such as `-x: 'value'`, without invoking the companion.
+The Bash adapter completes literal simple-command words, including ordinary
+single/double quotes and backslash escapes. It returns no candidates when the
+prefix contains unquoted redirections or shell expansions instead of guessing
+their resulting arguments. Zsh
+retains its native cursor behavior: `COMPLETE_IN_WORD` enables separate prefix
+and suffix matching; otherwise it completes the whole word. The generated
+scripts use the line protocol, which omits values containing control characters;
+use the JSON-lines protocol directly when those values or candidate metadata are
+needed.
+
 ## Diagnostics and failures
 
 Set `sensitive: true` on a value option to redact its explicit value, parser
-message, and suggestions from default terminal diagnostics. The formatter also
+message, and suggestions from default terminal diagnostics. Sensitive options
+also omit automatic raw default labels and finite-choice candidates from help
+and completion. An explicit presentation label or application completion provider
+remains application-owned. The formatter also
 escapes terminal control characters. Applications retain access to structured
 diagnostics for custom rendering.
 
 Successful deprecation warnings are rendered before dispatch. Expected
-application failures are returned as `CliMainOutput`. Unexpected errors receive
+application failures are returned as `CliMainOutput`. Unexpected handler errors receive
 a stable terminal message and can be observed through `observeFailure` for
 deliberate logging or telemetry.
 

@@ -1,21 +1,22 @@
 import {
   createCliInvocationParser,
   createCliOptionDiagnostic,
+  type CliCommandRoute,
   type CliInvocationParser,
   type CliOptionBinder,
-  type CliOptionBindingInput,
-  type CliScannedOption,
-  type CliUnknownFlag
+  type CliCommand,
+  type CliScannedOption
 } from '@ismail-elkorchi/cli-core';
 import {
-  createParserFromMap,
+  createArgvCursor,
+  createParser,
   type OptionDefinitionMap,
   type ParseIssue,
   type Parser,
   type ScannedOption,
-  type UnknownFlag
+  type ScanIssue
 } from 'argv-flags';
-import type { CliOptionDefinition, CliOptionDefinitions } from './public-types.ts';
+import type { CliArgvInspection, CliOptionDefinition, CliOptionDefinitions } from './public-types.ts';
 
 type RuntimeDefinition<Definition> = Definition extends CliOptionDefinition
   ? Omit<
@@ -34,110 +35,114 @@ export type RuntimeParser = Parser<OptionDefinitionMap>;
 
 /** Compiles one immutable parser from a command's effective option definitions. */
 export function compileOptionParser(definitions: CliOptionDefinitions): RuntimeParser {
-  return createParserFromMap(stripPresentation(definitions));
+  return createParser(stripPresentation(definitions));
 }
 
-/** Creates command routing and final binding over the same argv-flags grammar. */
+/** Routes and decodes one owned classification using composed option scopes. */
 export function createArgvBinder(
-  parsers: ReadonlyMap<string, RuntimeParser>
-): CliInvocationParser {
+  parsers: ReadonlyMap<string, RuntimeParser>,
+  controlNames: ReadonlySet<string>
+): CliInvocationParser & { readonly inspect: (route: CliCommandRoute) => CliArgvInspection } {
+  const occurrences = new WeakMap<readonly string[], ScannedOption[]>();
   const binder: CliOptionBinder = {
-    scan(input: CliOptionBindingInput) {
-      const result = parserFor(parsers, input).scan({
-        argv: input.argv,
-        flagPlacement: 'interspersed'
-      });
-      const unknownFlags = Object.freeze(
-        result.unknownFlags.map((flag) => translateUnknownFlag(flag, input.argvIndexes))
-      );
-      if (result.issues.length > 0) {
-        return {
-          status: 'invalid',
-          diagnostics: Object.freeze(
-            result.issues.map((issue) => translateIssue(issue, input.argvIndexes))
-          ),
-          unknownFlags
-        };
-      }
+    create(argv) {
+      const cursor = createArgvCursor({ argv, flagPlacement: 'interspersed' });
+      const richOptions: ScannedOption[] = [];
+      occurrences.set(argv, richOptions);
+      let firstArgument = true;
       return {
-        status: 'scanned',
-        options: Object.freeze(result.options.map((option) =>
-          translateScannedOption(option, input.argvIndexes))),
-        arguments: Object.freeze(result.arguments.map((argument) => Object.freeze({
-          value: argument.value,
-          argvIndex: originalIndex(argument.argvIndex, input.argvIndexes)
-        }))),
-        afterDoubleDash: Object.freeze(result.afterDoubleDash.map((argument) => Object.freeze({
-          value: argument.value,
-          argvIndex: originalIndex(argument.argvIndex, input.argvIndexes)
-        }))),
-        ...(result.doubleDashIndex === undefined
-          ? {}
-          : { doubleDashArgvIndex: originalIndex(result.doubleDashIndex, input.argvIndexes) }),
-        unknownFlags
-      };
-    },
-    bind(input: CliOptionBindingInput) {
-      const result = parserFor(parsers, input).parse({
-        argv: input.argv,
-        unknownFlagPolicy: 'collect',
-        flagPlacement: 'interspersed'
-      });
-      const unknownFlags = Object.freeze(
-        result.unknownFlags.map((flag) => translateUnknownFlag(flag, input.argvIndexes))
-      );
-      if (!result.success) {
-        return {
-          status: 'invalid',
-          diagnostics: Object.freeze(
-            result.issues.map((issue) => translateIssue(issue, input.argvIndexes))
-          ),
-          unknownFlags
-        };
-      }
-      return {
-        status: 'bound',
-        values: result.values,
-        specified: result.specified,
-        positionals: result.positionals,
-        afterDoubleDash: result.afterDoubleDash,
-        unknownFlags
+        next(command) {
+          const span = parserFor(parsers, command).scanNext(cursor);
+          // A malformed cluster can contain a recognized prefix. None of that
+          // token is actionable until its complete syntax is trustworthy.
+          const malformed = new Set(span.issues.filter((issue) => issue.code === 'INVALID_FLAG_SYNTAX')
+            .map((issue) => issue.argvIndex));
+          const options = span.options.filter((option) => !malformed.has(option.argvIndex));
+          const unknownFlags = span.unknownFlags.filter((flag) => !malformed.has(flag.argvIndex));
+          for (const option of options) richOptions.push(option);
+          const claimed = new Set<number>();
+          for (const option of options) {
+            claimed.add(option.argvIndex);
+            if ('valueArgvIndex' in option) claimed.add(option.valueArgvIndex);
+          }
+          for (const argument of [...span.arguments, ...span.afterDoubleDash]) claimed.add(argument.argvIndex);
+          for (const flag of unknownFlags) claimed.add(flag.argvIndex);
+          if (span.doubleDashIndex !== undefined) claimed.add(span.doubleDashIndex);
+          const unclassified = [];
+          for (let index = span.startIndex; index < span.endIndex; index += 1) {
+            if (!claimed.has(index)) unclassified.push(Object.freeze({ value: argv[index] ?? '', argvIndex: index }));
+          }
+          const controls = firstArgument && command.path.length === 0 && span.arguments[0]?.value === 'help'
+            ? span.arguments : [];
+          if (span.arguments.length > 0) firstArgument = false;
+          return {
+            nextIndex: span.endIndex,
+            controls,
+            options: options.filter((option) => !controlNames.has(option.option)).map(translateScannedOption),
+            controlOptions: options.filter((option) => controlNames.has(option.option)).map(translateScannedOption),
+            arguments: controls.length === 0 ? span.arguments : [],
+            afterDoubleDash: span.afterDoubleDash,
+            unknownFlags: unknownFlags,
+            diagnostics: span.issues.map(translateIssue),
+            unclassified,
+            ...(span.doubleDashIndex === undefined ? {} : { doubleDashArgvIndex: span.doubleDashIndex })
+          };
+        },
+        bind(command) {
+          const result = parserFor(parsers, command).decode(cursor, { unknownFlagPolicy: 'collect' });
+          if (!result.success) return {
+            status: 'invalid', diagnostics: result.issues.filter(isDecoderIssue).map(translateIssue)
+          };
+          const values = Object.create(null) as Record<string, unknown>;
+          const specified = Object.create(null) as Record<string, boolean>;
+          for (const [name, value] of Object.entries(result.values)) {
+            if (!controlNames.has(name)) values[name] = value;
+          }
+          for (const [name, value] of Object.entries(result.specified)) {
+            if (!controlNames.has(name)) specified[name] = value;
+          }
+          return { status: 'bound', values: Object.freeze(values), specified: Object.freeze(specified) };
+        }
       };
     }
   };
-  return createCliInvocationParser(Object.freeze(binder));
-}
-
-function translateScannedOption(
-  option: ScannedOption,
-  argvIndexes: readonly number[]
-): CliScannedOption {
-  const location = {
-    option: option.option,
-    flag: option.flag,
-    argvElement: option.argvElement,
-    argvIndex: originalIndex(option.argvIndex, argvIndexes),
-    ...(option.offset === undefined ? {} : { offset: option.offset })
-  };
-  if (option.state !== 'explicit-value' && option.state !== 'unexpected-value') {
-    return Object.freeze(location);
-  }
+  const parser = createCliInvocationParser(Object.freeze(binder));
   return Object.freeze({
-    ...location,
-    rawValue: option.rawValue,
-    valueArgvIndex: originalIndex(option.valueArgvIndex, argvIndexes),
-    inline: option.inline
+    ...parser,
+    inspect(route: CliCommandRoute): CliArgvInspection {
+      const classified = route.classification;
+      const options = occurrences.get(classified.argv);
+      if (options === undefined) throw new TypeError('Route classification is not owned by this binder.');
+      const commandIndexes = new Set(route.commandIndexes);
+      return Object.freeze({
+        argv: classified.argv,
+        commandPath: route.command.path,
+        options: Object.freeze([...options]),
+        positionalArguments: Object.freeze(classified.arguments.filter((argument) => !commandIndexes.has(argument.argvIndex))),
+        passthroughArguments: classified.afterDoubleDash,
+        unknownFlags: classified.unknownFlags,
+        unclassifiedArguments: classified.unclassified,
+        controlArguments: classified.controls,
+        ...(classified.doubleDashArgvIndex === undefined ? {} : { doubleDashIndex: classified.doubleDashArgvIndex })
+      });
+    }
   });
 }
 
-function parserFor(
-  parsers: ReadonlyMap<string, RuntimeParser>,
-  input: CliOptionBindingInput
-): RuntimeParser {
-  const parser = parsers.get(input.command.key);
-  if (parser === undefined) {
-    throw new TypeError(`Missing option parser for command ${input.command.key}.`);
-  }
+function translateScannedOption(option: ScannedOption): CliScannedOption {
+  const location = {
+    option: option.option, flag: option.flag, argvElement: option.argvElement,
+    argvIndex: option.argvIndex,
+    ...(option.offset === undefined ? {} : { offset: option.offset })
+  };
+  return option.state === 'explicit-value' || option.state === 'unexpected-value'
+    ? { ...location, rawValue: option.rawValue, valueArgvIndex: option.valueArgvIndex, inline: option.inline }
+    : location;
+}
+
+function parserFor(parsers: ReadonlyMap<string, RuntimeParser>, command: CliCommand): RuntimeParser {
+  const parser = parsers.get(command.key);
+  if (parser === undefined) throw new TypeError(`Missing option parser for command ${command.key}.`);
   return parser;
 }
 
@@ -178,52 +183,20 @@ function stripPresentation(definitions: CliOptionDefinitions): OptionDefinitionM
   return Object.freeze(runtimeDefinitions);
 }
 
-function translateIssue(
-  issue: ParseIssue,
-  argvIndexes: readonly number[]
-) {
+function translateIssue(issue: ParseIssue) {
   const { code, message, ...details } = issue;
-  return createCliOptionDiagnostic(
-    code,
-    'error',
-    message,
-    mapLocations(details, argvIndexes)
-  );
+  return createCliOptionDiagnostic(code, 'error', message, details);
 }
 
-function translateUnknownFlag(
-  flag: UnknownFlag,
-  argvIndexes: readonly number[]
-): CliUnknownFlag {
-  return Object.freeze({
-    argvElement: flag.argvElement,
-    flag: flag.flag,
-    argvIndex: originalIndex(flag.argvIndex, argvIndexes),
-    ...(flag.offset === undefined ? {} : { offset: flag.offset }),
-    ...(flag.inlineValue === undefined ? {} : { inlineValue: flag.inlineValue }),
-    ...(flag.suggestions === undefined
-      ? {}
-      : { suggestions: Object.freeze([...flag.suggestions]) })
-  });
-}
+// argv-flags decode includes scanner issues as well as semantic issues. The
+// scanner owns these diagnostics in next(); bind contributes only decoder issues.
+// Keep this exhaustive over ScanIssue so a new lexical issue requires ownership.
+const scannerIssueCodes = {
+  INVALID_FLAG_SYNTAX: true,
+  MISSING_OPTION_VALUE: true,
+  UNEXPECTED_OPTION_VALUE: true
+} satisfies Record<ScanIssue['code'], true>;
 
-function mapLocations(
-  details: Readonly<Record<string, unknown>>,
-  argvIndexes: readonly number[]
-): Readonly<Record<string, unknown>> {
-  return Object.freeze({
-    ...details,
-    ...('argvIndex' in details && typeof details['argvIndex'] === 'number'
-      ? { argvIndex: originalIndex(details['argvIndex'], argvIndexes) }
-      : {}),
-    ...('valueArgvIndex' in details && typeof details['valueArgvIndex'] === 'number'
-      ? { valueArgvIndex: originalIndex(details['valueArgvIndex'], argvIndexes) }
-      : {})
-  });
-}
-
-function originalIndex(parserIndex: number, argvIndexes: readonly number[]): number {
-  const index = argvIndexes[parserIndex];
-  if (index === undefined) throw new TypeError('Option parser returned an invalid argv index.');
-  return index;
+function isDecoderIssue(issue: ParseIssue): boolean {
+  return !Object.hasOwn(scannerIssueCodes, issue.code);
 }
